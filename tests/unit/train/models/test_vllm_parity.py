@@ -33,6 +33,7 @@ from vllm.plugins import load_general_plugins
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.inference.vllm.models.inkling2.configs import Inkling2MMConfig
+from prime_rl.inference.vllm.models.inkling2.loop import Inkling2LoopMMConfig
 from prime_rl.inference.vllm.worker.weight_transfer import get_weight_model, load_weights_checkpoint_layerwise
 from prime_rl.trainer.model import forward, get_model, resolve_auto_attn
 from prime_rl.trainer.models.afmoe import AfmoeConfig
@@ -110,6 +111,7 @@ class Case:
     post_init: Callable[[torch.nn.Module], None] | None = None
     """Runs after `randomize`, for weights and buffers whose random values need a structure or scale."""
     tiny: bool = False
+    router_replay: bool = True
     known_bug: str | None = None
     """Why the case fails today. It runs as a strict xfail, so a fix shows up as a failure until this is removed."""
 
@@ -158,6 +160,18 @@ def shape_inkling2(model: torch.nn.Module) -> None:
             param.normal_(0.0, 0.5)
         elif name.startswith("model.attn_res.") and param.ndim == 2:
             param.normal_(0.0, 1.0)
+
+
+@torch.no_grad()
+def shape_inkling2_loop(model: torch.nn.Module) -> None:
+    shape_inkling2(model)
+    for name, parameter in model.named_parameters():
+        if "message" in name:
+            parameter.normal_(0.0, 0.1)
+    # Per-pass router replay is not implemented yet. Give the top-k a margin
+    # to isolate loop/cache/reload equivalence from discrete near-tie flips.
+    for router in moe_routers(model).values():
+        router.selection_bias.copy_(torch.arange(router.selection_bias.numel(), device="cuda") * 2.0)
 
 
 def qwen3_8_flash_next_config() -> Qwen3_8FlashNextTextConfig:
@@ -558,6 +572,36 @@ CASES = [
         post_init=shape_inkling2,
     ),
     Case(
+        "inkling2_loop",
+        Inkling2LoopMMConfig(
+            text_config=dict(
+                vocab_size=151936,
+                hidden_size=256,
+                num_hidden_layers=8,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                head_dim=64,
+                d_rel=16,
+                rel_extent=128,
+                sliding_window_size=128,
+                n_layers_per_attn_res_block=2,
+                log_scaling_n_floor=64,
+                n_routed_experts=8,
+                num_experts_per_tok=2,
+                intermediate_size=128,
+                loop_config=dict(core_start=2, core_end=6, num_passes=3, gate_rank=16, is_varloop=False),
+            ),
+            architectures=["Inkling2LoopForConditionalGeneration"],
+        ),
+        # Sixteen visits, nonzero cross-pass controllers, no route replay.
+        # SM120: max 0.0921, mismatch KL 1.72e-4; retain ~2-3x headroom.
+        max_abs=0.2,
+        mismatch_kl=5e-4,
+        post_init=shape_inkling2_loop,
+        router_replay=False,
+        engine=dict(tokenizer_mode="hf"),
+    ),
+    Case(
         "gpt_oss",
         # Layer 0 is sliding-window attention, layer 1 full attention, both with sinks
         GptOssConfig(
@@ -800,7 +844,7 @@ def test_matches_vllm(
     for param in model.parameters():
         if param not in fp32_params:
             param.data = param.data.bfloat16()
-    moe = bool(moe_routers(model))
+    moe = bool(moe_routers(model)) and case.router_replay
     vllm, vllm_routes = vllm_logprobs(tmp_path, case, state_dict, rows, moe, plugin_configs)
 
     if moe:
@@ -811,5 +855,7 @@ def test_matches_vllm(
     log_ratio = torch.cat(trainer) - torch.cat(vllm)
     max_abs = log_ratio.abs().max().item()
     mismatch_kl = (torch.expm1(log_ratio) - log_ratio).mean().item()
-    assert max_abs <= case.max_abs, f"max |logprob diff| {max_abs:.2e} > {case.max_abs:.0e}"
+    assert max_abs <= case.max_abs, (
+        f"max |logprob diff| {max_abs:.2e} > {case.max_abs:.0e}; mismatch KL {mismatch_kl:.2e}"
+    )
     assert mismatch_kl <= case.mismatch_kl, f"mismatch KL {mismatch_kl:.2e} > {case.mismatch_kl:.0e}"

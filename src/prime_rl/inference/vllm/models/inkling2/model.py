@@ -146,6 +146,7 @@ class Inkling2DecoderLayer(nn.Module):
 
 
 class Inkling2Model(nn.Module):
+    decoder_layer_class = Inkling2DecoderLayer
     def __init__(
         self,
         config: Inkling2ModelConfig,
@@ -162,7 +163,7 @@ class Inkling2Model(nn.Module):
         self.embed_tokens = VocabParallelEmbedding(config.padded_vocab_size, config.hidden_size)
         self.embed_norm = Inkling2RMSNorm(config.hidden_size, config.rms_norm_eps, out_dtype=None)
         self.layers = nn.ModuleList(
-            Inkling2DecoderLayer(config, i, quant_config, f"{prefix}.layers.{i}")
+            self.decoder_layer_class(config, i, quant_config, f"{prefix}.layers.{i}")
             for i in range(config.num_hidden_layers)
         )
         self.attn_res = Inkling2AttnRes(config)
@@ -283,6 +284,8 @@ class Inkling2Model(nn.Module):
 class Inkling2ForCausalLM(nn.Module):
     """Text-only Inkling2 (`Inkling2ForConditionalGeneration` minus images)."""
 
+    model_class = Inkling2Model
+
     # Weights mirror the checkpoint names after these substitutions, except for
     # the fused per-layer weights in ``_shards``.
     _renames = (
@@ -319,7 +322,7 @@ class Inkling2ForCausalLM(nn.Module):
         self.text_config = text_config = config.text_config
         # Per-tensor cache of this rank's expert ids (see `_load_experts`).
         self._local_expert_ids: dict[str, tuple[int, ...]] = {}
-        self.model = Inkling2Model(text_config, quant_config, f"{prefix}model")
+        self.model = self.model_class(text_config, quant_config, f"{prefix}model")
         self.lm_head = ParallelLMHead(text_config.padded_vocab_size, text_config.hidden_size)
         self.logits_processor = LogitsProcessor(
             text_config.padded_vocab_size,

@@ -79,6 +79,11 @@ def _clean_content(text: str | None) -> str | None:
 class Inkling2ReasoningParser(BaseThinkingReasoningParser):
     """Thinking block between ``<|content_thinking|>`` and ``<|end_message|>``."""
 
+    def adjust_request(self, request: ChatCompletionRequest | ResponsesRequest):
+        # The framing tokens distinguish thinking from the final answer.
+        request.skip_special_tokens = False
+        return request
+
     @property
     def start_token(self) -> str:
         return CONTENT_THINKING

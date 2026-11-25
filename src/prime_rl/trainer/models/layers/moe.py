@@ -194,7 +194,7 @@ class TokenChoiceTopKRouter(nn.Module):
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
         )
-        logits = self.gate(x)
+        logits = self.gate.forward(x) if getattr(self, "gate_pre_unsharded", False) else self.gate(x)
 
         if self.score_func == "sigmoid":
             scores = torch.sigmoid(logits)

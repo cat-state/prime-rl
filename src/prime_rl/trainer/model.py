@@ -588,11 +588,21 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
         block_fsdp_config = fsdp_config
+        if getattr(transformer_block, "preserve_input_dtypes", False):
+            # Cross-pass messages are accumulated in FP32; cast only the weights.
+            block_fsdp_config = {
+                **block_fsdp_config,
+                "mp_policy": MixedPrecisionPolicy(
+                    param_dtype=torch.bfloat16,
+                    reduce_dtype=DTYPE_MAP[config.reduce_dtype],
+                    cast_forward_inputs=False,
+                ),
+            }
         if expert_mesh_info is not None and isinstance(block_mlp, MoE):
             # The experts shard over the EP-complement mesh but stay in the block's FSDP unit: a nested
             # unit would put dynamo-disabled FSDP hooks inside the compiled block and break fullgraph.
             block_fsdp_config = {
-                **fsdp_config,
+                **block_fsdp_config,
                 "shard_placement_fn": _expert_shard_placement_fn(
                     block_mlp.experts, expert_mesh_info, shard_placement_fn
                 ),
@@ -626,7 +636,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         fully_shard(
             [model.lm_head, final_module],
             mesh=hsdp_mesh,
-            mp_policy=mp_policy,
+            mp_policy=MixedPrecisionPolicy(
+                param_dtype=torch.bfloat16,
+                reduce_dtype=DTYPE_MAP[config.reduce_dtype],
+                cast_forward_inputs=not getattr(final_module, "preserve_input_dtypes", False),
+            ),
             offload_policy=offload_policy,
             reshard_after_forward=False,
             shard_placement_fn=shard_placement_fn,

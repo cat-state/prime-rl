@@ -459,12 +459,14 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class Inkling2Model(Inkling2PreTrainedModel):
+    decoder_layer_class = Inkling2DecoderLayer
+
     def __init__(self, config: Inkling2TextConfig):
         super().__init__(config)
         self.vocab_size = config.vocab_size
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.embed_norm = RMSNorm(RMSNormConfig(config.hidden_size, config.rms_norm_eps))
-        self.layers = nn.ModuleList([Inkling2DecoderLayer(config, idx) for idx in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([self.decoder_layer_class(config, idx) for idx in range(config.num_hidden_layers)])
         self.norm = RMSNorm(RMSNormConfig(config.hidden_size, config.rms_norm_eps))
         self.attn_res = Inkling2AttnRes(config)
         self.final_input = Inkling2BlockAttentionResidual(config.hidden_size, config.rms_norm_eps)
@@ -503,6 +505,15 @@ class Inkling2Model(Inkling2PreTrainedModel):
         B, S, _ = hidden_states.shape
         block_states = hidden_states.new_zeros(B, S, 0, self.config.hidden_size)
 
+        hidden_states, block_states = self.run_layers(
+            hidden_states, block_states, position_ids, cu_seqlens, doc_ids, block_masks, routed_experts
+        )
+
+        hidden_states = self.final_input(self.attn_res.output_query, block_states, hidden_states)[..., 0, :]
+        hidden_states = self.norm(hidden_states).to(inputs_embeds.dtype)
+        return TextModelOutput(last_hidden_state=hidden_states)
+
+    def run_layers(self, hidden_states, block_states, position_ids, cu_seqlens, doc_ids, block_masks, routed_experts):
         for layer_idx, layer in enumerate(self.layers):
             attn_query = self.attn_res.attn_queries[layer_idx - 1] if layer_idx > 0 else None
             hidden_states, block_states = layer(
@@ -517,9 +528,7 @@ class Inkling2Model(Inkling2PreTrainedModel):
                 routed_experts[:, :, layer_idx] if routed_experts is not None else None,
             )
 
-        hidden_states = self.final_input(self.attn_res.output_query, block_states, hidden_states)[..., 0, :]
-        hidden_states = self.norm(hidden_states).to(inputs_embeds.dtype)
-        return TextModelOutput(last_hidden_state=hidden_states)
+        return hidden_states, block_states
 
 
 class SoftcapLinear(nn.Linear):
@@ -531,14 +540,17 @@ class SoftcapLinear(nn.Linear):
 
 
 class Inkling2ForCausalLM(Inkling2PreTrainedModel):
+    text_config_class = Inkling2TextConfig
+    model_class = Inkling2Model
+
     def __init__(self, config: Inkling2Config | Inkling2TextConfig):
         text_config = getattr(config, "text_config", None)
         if isinstance(text_config, dict):
-            text_config = Inkling2TextConfig(**text_config)
+            text_config = self.text_config_class(**text_config)
         if text_config is None:
             text_config = config
         super().__init__(text_config)
-        self.model = Inkling2Model(text_config)
+        self.model = self.model_class(text_config)
         self.vocab_size = text_config.vocab_size
         self.lm_head = SoftcapLinear(
             text_config.hidden_size, text_config.vocab_size, text_config.final_logit_softcapping

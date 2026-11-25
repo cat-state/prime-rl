@@ -44,6 +44,12 @@ TINY = dict(
 
 # Layer kinds the default configs do not build.
 LAYER_KINDS = {
+    "inkling2_loop_text": dict(
+        num_hidden_layers=8, n_layers_per_attn_res_block=2, loop_layer_index_start=2, loop_layer_index_end=6
+    ),
+    "inkling2_loop": dict(
+        num_hidden_layers=8, n_layers_per_attn_res_block=2, loop_layer_index_start=2, loop_layer_index_end=6
+    ),
     "deepseek_v4": dict(
         num_hidden_layers=4,
         num_hash_layers=1,

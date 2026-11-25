@@ -191,7 +191,7 @@ class Inkling2Attention(nn.Module, AttentionLayerBase):
 
     def _project(self, x_q: torch.Tensor, x_k: torch.Tensor, x_v: torch.Tensor) -> list[torch.Tensor]:
         weight = self.qkvr.weight
-        if self.is_local:
+        if self.is_local and x_k is x_q and x_v is x_q:
             projected = nn.functional.linear(x_q, weight)
             return list(projected.split(self.split_sizes, dim=-1)[:6])
         q_side, kv_size = sum(self.split_sizes[:4]), self.split_sizes[4]
@@ -222,7 +222,7 @@ class Inkling2Attention(nn.Module, AttentionLayerBase):
         Local layers read q/k/v from `x_q`; full layers take `x_k`, `x_v` and
         the fp32 log-scaling `tau` for q/r.
         """
-        if self.is_local:
+        if self.is_local and x_k is None:
             x_k = x_v = x_q
         assert x_k is not None and x_v is not None
         q, r, gate, sinks, k, v = self._project(x_q, x_k, x_v)

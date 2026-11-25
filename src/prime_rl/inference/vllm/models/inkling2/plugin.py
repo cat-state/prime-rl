@@ -59,11 +59,14 @@ def register() -> None:
     from vllm.model_executor.models.registry import ModelRegistry
 
     from .configs import Inkling2MMConfig, Inkling2ModelConfig
+    from .loop import Inkling2LoopForCausalLM, Inkling2LoopMMConfig
     from .model import Inkling2ForCausalLM
 
     for model_type, config_cls in (
         ("inkling2", Inkling2MMConfig),
         ("inkling2_model", Inkling2ModelConfig),
+        ("inkling2_loop", Inkling2LoopMMConfig),
     ):
         AutoConfig.register(model_type, config_cls, exist_ok=True)
     ModelRegistry.register_model(ARCHITECTURE, Inkling2ForCausalLM)
+    ModelRegistry.register_model("Inkling2LoopForConditionalGeneration", Inkling2LoopForCausalLM)

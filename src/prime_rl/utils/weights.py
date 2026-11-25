@@ -27,10 +27,18 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
 
 
+def _state_dict_paths(save_dir: Path) -> list[Path]:
+    index_path = save_dir / SAFE_WEIGHTS_INDEX_NAME
+    if index_path.is_file():
+        index = json.loads(index_path.read_text())
+        return [save_dir / name for name in sorted(set(index["weight_map"].values()))]
+    return list(save_dir.glob("*.safetensors"))
+
+
 def load_state_dict_keys(save_dir: Path) -> list[str]:
     """Load only the key names from safetensor files without reading tensor data."""
     keys: list[str] = []
-    for safetensor_path in save_dir.glob("*.safetensors"):
+    for safetensor_path in _state_dict_paths(save_dir):
         with safe_open(safetensor_path, framework="pt", device="cpu") as f:
             keys.extend(f.keys())
     return keys
@@ -38,7 +46,7 @@ def load_state_dict_keys(save_dir: Path) -> list[str]:
 
 def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
     """Load a state dict from a local directory with safetensor files."""
-    safetensors_paths = list(save_dir.glob("*.safetensors"))
+    safetensors_paths = _state_dict_paths(save_dir)
     state_dict = {}
     for safetensor_path in safetensors_paths:
         with safe_open(safetensor_path, framework="pt", device="cpu") as f:
