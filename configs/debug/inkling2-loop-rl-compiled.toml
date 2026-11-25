@@ -1,0 +1,5 @@
+# Compiled trainer overlay for the loop LoRA integration test.
+#   uv run rl @ configs/debug/inkling2-loop-rl.toml @ configs/debug/inkling2-loop-rl-compiled.toml
+[trainer.model.compile]
+fullgraph = false
+mode = "None"
