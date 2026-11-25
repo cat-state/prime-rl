@@ -17,6 +17,8 @@ from transformers import AutoModelForMultimodalLM, AutoProcessor
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dataset", type=Path)
+    parser.add_argument("--contract", type=Path)
+    parser.add_argument("--output-dir", default="features")
     args = parser.parse_args()
     revision = "c9d028302cd0f035fdf8e7e91f089a4ce94d2195"
     source = "thinkingmachines/Inkling-2-Mini"
@@ -24,10 +26,13 @@ def main():
     model = AutoModelForMultimodalLM.from_pretrained(
         source, revision=revision, dtype=torch.bfloat16, device_map="cuda:0"
     ).eval()
-    output = args.dataset / "features"
+    output = args.dataset / args.output_dir
     output.mkdir(exist_ok=True)
     records = []
     for row in json.loads((args.dataset / "manifest.json").read_text())["records"]:
+        prompt = row["prompt"]
+        if args.contract:
+            prompt += "\n\n" + args.contract.read_text()
         path = Path(row["image"])
         if hashlib.sha256(path.read_bytes()).hexdigest() != row["image_sha256"]:
             raise ValueError(f"Image changed: {path}")
@@ -40,7 +45,7 @@ def main():
                 "role": "user",
                 "content": [
                     {"type": "image", "image": image},
-                    {"type": "text", "text": row["prompt"]},
+                    {"type": "text", "text": prompt},
                 ],
             }
         ]
@@ -80,7 +85,8 @@ def main():
                 "original_size": original_size,
                 "encoder_input_size": list(image.size),
                 "resize": "aspect-preserving thumbnail max640 Lanczos",
-                "prompt_sha256": hashlib.sha256(row["prompt"].encode()).hexdigest(),
+                "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                "prompt": prompt,
                 "image_tokens": len(features),
                 "prompt_tokens": inputs["input_ids"].numel(),
             }

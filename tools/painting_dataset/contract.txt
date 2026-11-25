@@ -1,0 +1,35 @@
+Renderer contract (this takes precedence over any generic shader instructions):
+Return one complete WGSL code block in your final answer. Implement
+fn scene_override(p: vec3f) -> vec2f
+returning signed distance in .x and a material ID as f32 in .y. Negative distance
+is inside geometry. Use positive material IDs; 0 means sky/no hit. This is a
+ray-marched 3D scene, NOT a fragment shader. Do not declare bindings, entry points,
+textures or uniforms. You may add uniquely named helper functions. Avoid recursion
+and use only short bounded loops. Prioritize a complete compact scene over detail.
+
+Camera: eye=(0,0,4), look=(0,0,0), Y up. Compose the painting in the XY plane
+around the origin, using shallow boxes/reliefs near Z=0. Output is rendered at
+the target image's aspect ratio. Use scene=9, seed=42, one sample per pixel.
+The scene keeps Crivelli lighting and textured materials: supplied IDs are not
+literal RGB colors. Palette guide: 1 terracotta tiles; 6 gray stone (position
+dependent); 7 reddish brown; 8 ochre/gold; 9 dark wood; 10 patterned dark green;
+11 patterned red/gold; 12 tan marble; 13 dark olive green; 14 near black;
+15 cream; 16 dark teal; 17 patterned peacock. Other positive IDs use tan.
+Lighting, procedural grain and relief modify these base colors.
+
+Existing helpers (do not redefine):
+box(p:vec3f,b:vec3f)->f32 // box centered at zero, b is half extents
+cylinder(p:vec3f,r:f32,h:f32)->f32 // Y axis, h is half height
+torus(p:vec3f,r:f32,t:f32)->f32 // Y axis
+rot(p:vec2f,a:f32)->vec2f // rotate counterclockwise, radians
+unite(a:vec2f,b:vec2f)->vec2f // selects smaller distance and its material
+smoothmin(a:f32,b:f32,k:f32)->f32
+noise(p:vec3f)->f32
+fbm(p:vec3f)->f32
+Sphere distance is length(p-center)-radius. Built-in WGSL math is available.
+Example valid scene:
+fn scene_override(p:vec3f)->vec2f {
+  var d=vec2f(box(p-vec3f(0.,0.,-.15),vec3f(1.2,1.,.05)),15.);
+  d=unite(d,vec2f(length(p-vec3f(.2,0.,0.))-.3,11.));
+  return d;
+}
