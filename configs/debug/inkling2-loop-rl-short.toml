@@ -1,0 +1,29 @@
+# Short-string curriculum in the unchanged Prime reverse-text environment.
+#   uv run rl @ configs/debug/inkling2-loop-rl.toml @ configs/debug/inkling2-loop-rl-compiled.toml @ configs/debug/inkling2-loop-rl-short.toml
+max_steps = 12
+
+[orchestrator]
+batch_size = 4
+
+[[orchestrator.train.source]]
+name = "reverse-short"
+env.taskset.id = "reverse-text"
+env.taskset.dataset_name = "/root/prime-rl/loop-validation/reverse-short-data"
+env.taskset.dataset_split = "train[:8]"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.eval]
+interval = 6
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.eval.source]]
+name = "reverse-short-heldout"
+select.limit = 4
+env.taskset.id = "reverse-text"
+env.taskset.dataset_name = "/root/prime-rl/loop-validation/reverse-short-data"
+env.taskset.dataset_split = "train[8:12]"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
