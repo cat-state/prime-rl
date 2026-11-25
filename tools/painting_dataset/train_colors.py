@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--dataset", type=Path, default=Path("loop-validation/color-task"))
     parser.add_argument("--group-centered", action="store_true", help="Accumulate one update from four samples per prompt")
     parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--capture-gradients", action="store_true", help="Preserve pre-optimizer gradient shards for numerical diagnosis")
     args = parser.parse_args()
     setup_logger("info")
     setup_torch_distributed()
@@ -34,6 +35,9 @@ def main():
     if args.compile:
         destination = destination.with_name(destination.name + "-compiled")
     metrics_path = root / ("scored-update-metrics-compiled.json" if args.compile else "scored-update-metrics.json")
+    if args.capture_gradients:
+        destination = destination.with_name(destination.name + "-diagnostic")
+        metrics_path = metrics_path.with_stem(metrics_path.stem + "-diagnostic")
     if destination.exists() or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
@@ -87,10 +91,16 @@ def main():
         if not torch.isfinite(norm) or (score > 0 and norm <= 0):
             raise ValueError("Invalid scored image gradients")
         if not args.group_centered or index == len(samples) - 1:
+            if args.capture_gradients:
+                gradients = {name: local(p.grad).detach().cpu().contiguous().clone()
+                             for name, p in model.named_parameters() if p.requires_grad and p.grad is not None}
+                save_file(gradients, str(root / f"{destination.name}-sample{index}-rank{dist.get_rank()}-grads.safetensors"))
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         metrics.append({"id": row["id"], "reward": score, "advantage": advantage,
                         "loss": loss.item(), "gradient_norm": norm.sqrt().item()})
+        if args.capture_gradients:
+            metrics[-1]["sampled_logprobs"] = output["logprobs"][mask].detach().float().cpu().tolist()
         if dist.get_rank() == 0:
             metrics_path.write_text(json.dumps(metrics, indent=2))
             print(metrics[-1], flush=True)
