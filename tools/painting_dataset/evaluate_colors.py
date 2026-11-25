@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--policy", default="base")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--adapter", type=Path)
+    parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--output-name", help="Separate evidence directory for a new evaluation protocol")
     args = parser.parse_args()
     rows = json.loads((args.dataset / "manifest.json").read_text())["records"]
     required = {row["id"] for row in rows}
@@ -34,16 +36,16 @@ def main():
                                          headers={"Content-Type": "application/json"})
         registration = json.load(urllib.request.urlopen(request, timeout=30))
         print(registration, flush=True)
-    output = args.dataset / f"rollouts-{args.policy}"
+    output = args.dataset / (args.output_name or f"rollouts-{args.policy}")
     output.mkdir(exist_ok=False)
     summary = []
     for row in rows:
         for sample in range(4 if row["split"] == "train" else 1):
             payload = {"prompt_id": row["id"], "policy": args.policy, "temperature": 0.7,
-                       "max_tokens": 512, "seed": 101 + sample}
+                       "max_tokens": args.max_tokens, "seed": 101 + sample}
             request = urllib.request.Request(f"http://127.0.0.1:{args.port}/generate",
                                              data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
-            response = json.load(urllib.request.urlopen(request, timeout=180))
+            response = json.load(urllib.request.urlopen(request, timeout=600))
             score = reward(response["raw_output"], row["answer"], response["finish_reason"])
             record = {"request": payload, "response": response, "reward": score,
                       "answer": row["answer"], "split": row["split"]}
