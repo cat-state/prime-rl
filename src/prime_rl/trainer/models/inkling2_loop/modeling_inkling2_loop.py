@@ -131,11 +131,16 @@ class Inkling2LoopModel(Inkling2Model):
             nn.init.zeros_(module.query)
 
     def run_layers(self, hidden_states, block_states, position_ids, cu_seqlens, doc_ids, block_masks, routed_experts):
-        if routed_experts is not None:
-            raise ValueError("Inkling 2 Mini router replay requires per-pass routes and is not supported")
         start, end = self.config.loop_layer_index_start, self.config.loop_layer_index_end
+        visits = self.config.num_hidden_layers + (end - start) * (self.config.loop_num_passes - 1)
+        if routed_experts is not None and routed_experts.shape[-2] != visits:
+            raise ValueError(f"Loop router replay requires {visits} execution visits, got {routed_experts.shape[-2]}")
+        visit = 0
 
         def run(index, hidden, blocks, messages=None):
+            nonlocal visit
+            routes = routed_experts[..., visit, :] if routed_experts is not None else None
+            visit += 1
             return self.layers[index](
                 hidden,
                 blocks,
@@ -146,6 +151,7 @@ class Inkling2LoopModel(Inkling2Model):
                 doc_ids=doc_ids,
                 block_masks=block_masks,
                 messages=messages,
+                routed_experts=routes,
             )
 
         for index in range(start):

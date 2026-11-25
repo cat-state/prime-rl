@@ -57,9 +57,10 @@ def register() -> None:
     _register_parsers()
     from transformers import AutoConfig
     from vllm.model_executor.models.registry import ModelRegistry
+    from vllm.transformers_utils.model_arch_config_convertor import MODEL_ARCH_CONFIG_CONVERTORS
 
     from .configs import Inkling2MMConfig, Inkling2ModelConfig
-    from .loop import Inkling2LoopForCausalLM, Inkling2LoopMMConfig
+    from .loop import Inkling2LoopArchConfigConvertor, Inkling2LoopForCausalLM, Inkling2LoopMMConfig
     from .model import Inkling2ForCausalLM
 
     for model_type, config_cls in (
@@ -70,3 +71,4 @@ def register() -> None:
         AutoConfig.register(model_type, config_cls, exist_ok=True)
     ModelRegistry.register_model(ARCHITECTURE, Inkling2ForCausalLM)
     ModelRegistry.register_model("Inkling2LoopForConditionalGeneration", Inkling2LoopForCausalLM)
+    MODEL_ARCH_CONFIG_CONVERTORS["inkling2_loop"] = Inkling2LoopArchConfigConvertor

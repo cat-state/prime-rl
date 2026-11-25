@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from vllm.distributed import tensor_model_parallel_all_reduce
+from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigConvertorBase
 
 from .configs import Inkling2MMConfig
 from .model import Inkling2AttnRes, Inkling2DecoderLayer, Inkling2ForCausalLM, Inkling2Model
@@ -23,6 +24,13 @@ class Inkling2LoopMMConfig(Inkling2MMConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+
+
+class Inkling2LoopArchConfigConvertor(ModelArchConfigConvertorBase):
+    def get_num_hidden_layers(self):
+        config = self.hf_text_config
+        loop = config.loop_config
+        return config.num_hidden_layers + (loop["core_end"] - loop["core_start"]) * (loop["num_passes"] - 1)
 
 
 class MessageController(nn.Module):
@@ -154,8 +162,6 @@ class Inkling2LoopForCausalLM(Inkling2ForCausalLM):
     model_class = Inkling2LoopModel
 
     def __init__(self, *, vllm_config, prefix=""):
-        if vllm_config.aux_output_config.enable_return_routed_experts:
-            raise ValueError("Loop router replay requires per-pass routes and is not supported")
         if vllm_config.quant_config is not None:
             raise ValueError("Loop training inference requires a dequantized BF16 checkpoint")
         super().__init__(vllm_config=vllm_config, prefix=prefix)

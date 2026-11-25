@@ -25,6 +25,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--compile", action="store_true")
+    parser.add_argument(
+        "--fp32-reference", action="store_true", help="Use replicated FP32 masters and FSDP BF16 compute"
+    )
+    parser.add_argument("--checkpoint-reference", action="store_true")
+    parser.add_argument("--router-replay", action="store_true")
     args = parser.parse_args()
     setup_logger("info")
     setup_torch_distributed()
@@ -59,21 +64,31 @@ def main():
                 parameter.normal_(std=0.1)
         # Give the selected experts a margin so this sharding test does not
         # conflate floating-point fusion with discrete top-k route changes.
-        for layer in reference.model.layers:
-            layer.mlp.router.selection_bias.copy_(torch.arange(4, device="cuda") * 2.0)
+        if not args.router_replay:
+            for layer in reference.model.layers:
+                layer.mlp.router.selection_bias.copy_(torch.arange(4, device="cuda") * 2.0)
     inject_prime_lm_head(reference)
     # Match the trainer's FP32 master weights and BF16 FSDP compute policy.
     sharded = copy.deepcopy(reference).float()
+    if args.fp32_reference:
+        reference.float()
     ids = torch.randint(0, 128, (1, 16), device="cuda")
     positions = torch.arange(8, device="cuda").repeat(2).unsqueeze(0)
     lengths = torch.tensor([8, 8], device="cuda")
+    routes = torch.rand(1, 16, 16, 4, device="cuda").argsort(-1)[..., :2].contiguous() if args.router_replay else None
 
     def loss(model):
-        output = model(ids, position_ids=positions, seq_lens=lengths, labels=ids)
+        output = model(ids, position_ids=positions, seq_lens=lengths, labels=ids, routed_experts=routes)
         return output["loss"] / ids.numel()
 
+    if args.checkpoint_reference:
+        for i, layer in enumerate(reference.model.layers):
+            reference.model.layers[i] = checkpoint_wrapper(layer)
     if args.compile:
         apply_compile(reference, CompileConfig(fullgraph=True))
+    if args.fp32_reference:
+        reference_config = ModelConfig(name="tiny-inkling2-loop", ep=1, dp_replicate=dist.get_world_size())
+        setup_fsdp(reference, reference_config, get_parallel_dims(reference_config))
     expected_loss = loss(reference)
     expected_loss.backward()
     trainer_config = ModelConfig(name="tiny-inkling2-loop", ep=1)
@@ -85,8 +100,16 @@ def main():
     setup_fsdp(sharded, trainer_config, parallel_dims)
     actual_loss = loss(sharded)
     actual_loss.backward()
-    reference_params = {name.replace("_orig_mod.", ""): p for name, p in reference.named_parameters()}
-    total_norm = torch.sqrt(sum(p.grad.float().square().sum() for p in reference.parameters() if p.grad is not None))
+    reference_params = {
+        name.replace("_checkpoint_wrapped_module.", "").replace("_orig_mod.", ""): p
+        for name, p in reference.named_parameters()
+    }
+
+    def full_gradient(parameter):
+        gradient = parameter.grad
+        return gradient.full_tensor().float() if hasattr(gradient, "full_tensor") else gradient.float()
+
+    total_norm = torch.sqrt(sum(full_gradient(p).square().sum() for p in reference.parameters() if p.grad is not None))
     errors = {}
     for name, parameter in sharded.named_parameters():
         name = name.replace("_checkpoint_wrapped_module.", "").replace("_orig_mod.", "")
@@ -95,6 +118,7 @@ def main():
             assert parameter.grad is None, name
             continue
         assert parameter.grad is not None, name
+        expected = full_gradient(reference_params[name])
         actual = parameter.grad.full_tensor().float()
         denominator = max(expected.float().norm().item(), total_norm.item() * 0.001)
         errors[name] = (actual - expected.float()).norm().item() / denominator
@@ -105,6 +129,9 @@ def main():
         "relative_loss_error": relative_loss,
         "worst_gradient_error": max(errors.values()),
         "compile": args.compile,
+        "fp32_reference": args.fp32_reference,
+        "checkpoint_reference": args.checkpoint_reference,
+        "router_replay": args.router_replay,
         "gradient_errors": errors,
     }
     if dist.get_rank() == 0:

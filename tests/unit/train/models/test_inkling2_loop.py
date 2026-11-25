@@ -125,6 +125,25 @@ def test_loop_restart_gradients_packing_and_conversion():
         dim=1,
     )
     torch.testing.assert_close(packed, separate, atol=0.025, rtol=0.025)
+    # Repeated physical layers must consume distinct execution-visit routes.
+    routes = torch.stack([torch.tensor([i % 4, (i + 1) % 4]) for i in range(16)]).cuda()
+    routes = routes.expand(1, 16, -1, -1).contiguous()
+    captured = []
+
+    def record_routes(module, args, output):
+        captured.append(output[1].detach())
+
+    handles = [layer.mlp.router.register_forward_hook(record_routes) for layer in model.model.layers]
+    with torch.no_grad():
+        replayed = model.model(ids, seq_lens=lengths, routed_experts=routes).last_hidden_state
+    for handle in handles:
+        handle.remove()
+    assert len(captured) == 16
+    for visit, selected in enumerate(captured):
+        assert torch.equal(selected.reshape(1, 16, 2), routes[:, :, visit])
+    assert torch.isfinite(replayed).all()
+    with pytest.raises(ValueError, match="16 execution visits"):
+        model.model(ids, seq_lens=lengths, routed_experts=routes[:, :, :8])
     loss = (packed.float() * torch.randn_like(packed.float())).mean()
     loss.backward()
     for name, parameter in model.named_parameters():

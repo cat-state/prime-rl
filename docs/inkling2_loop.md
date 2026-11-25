@@ -8,11 +8,15 @@ visits so each pass owns independent KV and short-convolution caches; its core
 weights are duplicated and refreshed from the shared trainer weights on reload.
 
 This is an experimental eager-mode integration. Use `compile = "None"`, `ep = 1`,
-`cp = 1`, and leave router replay disabled. Vision, speculative decoding,
+`cp = 1`, and enable `trainer.enable_router_replay` for RL. Routes are recorded
+in execution order: prelude, every core pass, then coda (48 visits for Mini).
+Vision, speculative decoding,
 variable-pass overrides, and context parallelism are not supported. The SiTU
 caps must match the release `(4, 25)`. Expert parallelism and a full RL run have
-not been validated. Compiled FSDP does not yet meet the numerical validation
-criterion; the diagnostic tool retains its failing metrics.
+not been validated. Compiled FSDP matches replicated training when both use
+FP32 masters and activation checkpointing in the tiny distributed check.
+Comparison against a reference without checkpointing still exceeds the gradient
+criterion; compiled training remains experimental pending downstream validation.
 
 ## Install and infer
 
@@ -66,6 +70,9 @@ uv run pytest tests/unit/train/models/test_scratch_init.py -k inkling
 uv run pytest tests/unit/train/models/test_vllm_parity.py -k inkling2
 uv run torchrun --standalone --nproc-per-node=2 \
   tools/validate_inkling2_loop.py /path/to/results
+uv run torchrun --standalone --nproc-per-node=2 \
+  tools/validate_inkling2_loop.py /path/to/compiled-results \
+  --compile --fp32-reference --checkpoint-reference
 ```
 
 The tests cover loop restart semantics, nonzero cross-pass gradients, packed
@@ -78,8 +85,9 @@ against a 0.02 limit.
 The inference test loads trainer weights through PrimeRL's layerwise reload
 path, runs sixteen layer visits with nonzero message controllers, and checks
 prompt log probabilities across sliding-window boundaries. On SM120 it measured
-maximum log-probability error 0.0921 and mismatch KL 1.72e-4, with limits 0.2 and
-5e-4. It uses separated routing scores because per-pass router replay is not
-implemented. Near-tie routing can amplify rounding differences substantially;
+maximum log-probability error 0.0802 and mismatch KL 1.08e-4, with limits 0.2 and
+5e-4. It uses per-visit router replay with ordinary routing scores, verifies the
+replayed expert IDs exactly, and retains an unrestricted-routing diagnostic.
+Near-tie routing can amplify rounding differences substantially;
 these results establish loop/cache/weight-transfer consistency, not general
 rollout/trainer equivalence for every prompt or training stability.
