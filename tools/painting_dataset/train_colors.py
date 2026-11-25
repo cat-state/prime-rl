@@ -1,8 +1,4 @@
-"""Four scored-image LoRA updates using cached on-policy HTTP rollouts.
-
-Uses reward as a zero-baseline advantage, not group-centered GRPO. This small
-integration test cannot demonstrate generalization when baseline accuracy is 1.
-"""
+"""Scored-image LoRA updates with optional group-centered gradient accumulation."""
 
 import argparse
 import json
@@ -12,7 +8,7 @@ import torch
 import torch.distributed as dist
 from safetensors.torch import save_file
 
-from prime_rl.configs.trainer import LoRAConfig, ModelConfig
+from prime_rl.configs.trainer import CompileConfig, LoRAConfig, ModelConfig
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.trainer.model import setup_model
 from prime_rl.trainer.models.inkling2_loop.frozen_images import FrozenImageCache
@@ -28,16 +24,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("loop-validation/color-task"))
     parser.add_argument("--group-centered", action="store_true", help="Accumulate one update from four samples per prompt")
+    parser.add_argument("--compile", action="store_true")
     args = parser.parse_args()
     setup_logger("info")
     setup_torch_distributed()
     torch.manual_seed(42)
     root = args.dataset
     destination = root / ("adapter-group-step1" if args.group_centered else "adapter-step4")
-    if destination.exists():
+    if args.compile:
+        destination = destination.with_name(destination.name + "-compiled")
+    metrics_path = root / ("scored-update-metrics-compiled.json" if args.compile else "scored-update-metrics.json")
+    if destination.exists() or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
-                         compile=None, ep=1, cp=1, offload="none",
+                         compile=CompileConfig(fullgraph=False) if args.compile else None, ep=1, cp=1, offload="none",
                          lora=LoRAConfig(rank=8, alpha=16, target_modules=["o_proj"]))
     model = setup_model(config, get_parallel_dims(config), False)
     get_lora_state().reset_adapter_parameters()
@@ -92,7 +92,7 @@ def main():
         metrics.append({"id": row["id"], "reward": score, "advantage": advantage,
                         "loss": loss.item(), "gradient_norm": norm.sqrt().item()})
         if dist.get_rank() == 0:
-            (root / "scored-update-metrics.json").write_text(json.dumps(metrics, indent=2))
+            metrics_path.write_text(json.dumps(metrics, indent=2))
             print(metrics[-1], flush=True)
     state = get_lora_state().adapter_state_dict()
     full = {k: (v.full_tensor() if hasattr(v, "full_tensor") else v).detach().cpu().contiguous().clone()
