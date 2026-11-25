@@ -485,7 +485,13 @@ class Inkling2Model(Inkling2PreTrainedModel):
         inputs_embeds_preprocessed: bool = False,
         image_features: Tensor | None = None,
         image_token_mask: Tensor | None = None,
+        mm_token_type_ids: Tensor | None = None,
     ) -> TextModelOutput:
+        if mm_token_type_ids is not None:
+            if image_token_mask is None or not torch.equal(mm_token_type_ids == 1, image_token_mask):
+                raise ValueError("Image token metadata must match the supplied feature mask")
+            if (mm_token_type_ids > 1).any():
+                raise ValueError("Inkling frozen image features do not support video")
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
         if inputs_embeds_preprocessed and inputs_embeds is None:

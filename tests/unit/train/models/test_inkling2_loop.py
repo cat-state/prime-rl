@@ -123,7 +123,8 @@ def test_loop_restart_gradients_packing_and_conversion():
         image_mask = torch.zeros_like(ids, dtype=torch.bool)
         image_mask[:, :2] = True
         inserted = model.model(
-            ids, image_features=mixed[image_mask], image_token_mask=image_mask, seq_lens=lengths
+            ids, image_features=mixed[image_mask], image_token_mask=image_mask,
+            mm_token_type_ids=image_mask.long(), seq_lens=lengths
         ).last_hidden_state
         prepared = model.model(inputs_embeds=mixed, inputs_embeds_preprocessed=True, seq_lens=lengths).last_hidden_state
         torch.testing.assert_close(inserted, prepared, atol=1e-3, rtol=1e-3)
