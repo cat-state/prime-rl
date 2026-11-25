@@ -17,8 +17,15 @@ def main():
     parser.add_argument("--adapter", type=Path)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--output-name", help="Separate evidence directory for a new evaluation protocol")
+    parser.add_argument("--split", choices=["train", "heldout"])
+    parser.add_argument("--samples", type=int, help="Override samples per image")
+    parser.add_argument("--seed-start", type=int, default=101)
     args = parser.parse_args()
+    if args.samples is not None and args.samples < 1:
+        parser.error("--samples must be positive")
     rows = json.loads((args.dataset / "manifest.json").read_text())["records"]
+    if args.split:
+        rows = [row for row in rows if row["split"] == args.split]
     required = {row["id"] for row in rows}
     for _ in range(60):
         try:
@@ -40,9 +47,9 @@ def main():
     output.mkdir(exist_ok=False)
     summary = []
     for row in rows:
-        for sample in range(4 if row["split"] == "train" else 1):
+        for sample in range(args.samples or (4 if row["split"] == "train" else 1)):
             payload = {"prompt_id": row["id"], "policy": args.policy, "temperature": 0.7,
-                       "max_tokens": args.max_tokens, "seed": 101 + sample}
+                       "max_tokens": args.max_tokens, "seed": args.seed_start + sample}
             request = urllib.request.Request(f"http://127.0.0.1:{args.port}/generate",
                                              data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
             response = json.load(urllib.request.urlopen(request, timeout=600))
