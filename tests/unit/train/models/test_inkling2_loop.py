@@ -103,6 +103,25 @@ def test_loop_restart_gradients_packing_and_conversion():
     assert warmup_routes.shape == (1, 16, 16, 2)
     ids = torch.randint(0, 128, (1, 16), device="cuda")
     lengths = torch.tensor([16], device="cuda")
+    with torch.no_grad():
+        raw = model.model.embed_tokens(ids)
+        normalized = model.model.embed_norm(raw)
+        token_hidden = model.model(ids, seq_lens=lengths).last_hidden_state
+        prepared_hidden = model.model(
+            inputs_embeds=normalized, inputs_embeds_preprocessed=True, seq_lens=lengths
+        ).last_hidden_state
+        torch.testing.assert_close(token_hidden, prepared_hidden, atol=1e-3, rtol=1e-3)
+        # Image features are inserted after text normalization in the reference.
+        # A hook verifies they enter the first layer without a second norm.
+        mixed = normalized.clone()
+        mixed[:, :2] *= 3
+        seen = []
+        hook = model.model.layers[0].register_forward_pre_hook(lambda module, args: seen.append(args[0].detach()))
+        model.model(inputs_embeds=mixed, inputs_embeds_preprocessed=True, seq_lens=lengths)
+        hook.remove()
+        torch.testing.assert_close(seen[0], mixed, atol=1e-3, rtol=1e-3)
+    with pytest.raises(ValueError, match="require inputs_embeds"):
+        model.model(ids, seq_lens=lengths, inputs_embeds_preprocessed=True)
     # Zero gates make subsequent passes reproduce the first pass: simply continuing
     # the residual stack (instead of restarting it) fails this check.
     with torch.no_grad():

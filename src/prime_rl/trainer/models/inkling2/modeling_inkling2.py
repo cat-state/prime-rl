@@ -482,12 +482,18 @@ class Inkling2Model(Inkling2PreTrainedModel):
         *,
         seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
+        inputs_embeds_preprocessed: bool = False,
     ) -> TextModelOutput:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+        if inputs_embeds_preprocessed and inputs_embeds is None:
+            raise ValueError("Preprocessed embeddings require inputs_embeds")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-        inputs_embeds = self.embed_norm(inputs_embeds)
+        # Multimodal reference inputs already contain normalized text embeddings
+        # with image features inserted afterward. Never normalize those twice.
+        if not inputs_embeds_preprocessed:
+            inputs_embeds = self.embed_norm(inputs_embeds)
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
@@ -580,6 +586,7 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel):
         *,
         seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
+        inputs_embeds_preprocessed: bool = False,
     ) -> PrimeLmOutput:
         outputs = self.model(
             input_ids=input_ids,
@@ -588,6 +595,7 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel):
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            inputs_embeds_preprocessed=inputs_embeds_preprocessed,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = (
