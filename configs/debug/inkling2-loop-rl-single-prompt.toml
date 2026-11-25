@@ -1,0 +1,11 @@
+# Integration-only overfit smoke test; not a learning/generalization benchmark.
+#   uv run rl @ configs/debug/inkling2-loop-rl.toml @ configs/debug/inkling2-loop-rl-single-prompt.toml
+[orchestrator]
+batch_size = 4
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.taskset.dataset_split = "train[:1]"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
