@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import time
 import urllib.request
 from pathlib import Path
 
@@ -15,6 +16,18 @@ def main():
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--adapter", type=Path)
     args = parser.parse_args()
+    rows = json.loads((args.dataset / "manifest.json").read_text())["records"]
+    required = {row["id"] for row in rows}
+    for _ in range(60):
+        try:
+            health = json.load(urllib.request.urlopen(f"http://127.0.0.1:{args.port}/health", timeout=2))
+            if required.issubset(health["prompts"]):
+                break
+        except OSError:
+            pass
+        time.sleep(2)
+    else:
+        raise RuntimeError("Requested task cache did not become ready")
     if args.adapter:
         request = urllib.request.Request(f"http://127.0.0.1:{args.port}/adapters",
                                          data=json.dumps({"policy": args.policy, "path": str(args.adapter.resolve())}).encode(),
@@ -24,7 +37,7 @@ def main():
     output = args.dataset / f"rollouts-{args.policy}"
     output.mkdir(exist_ok=False)
     summary = []
-    for row in json.loads((args.dataset / "manifest.json").read_text())["records"]:
+    for row in rows:
         for sample in range(4 if row["split"] == "train" else 1):
             payload = {"prompt_id": row["id"], "policy": args.policy, "temperature": 0.7,
                        "max_tokens": 512, "seed": 101 + sample}
