@@ -1,7 +1,7 @@
 # Experimental 2-trainer / 2-inference LoRA RL integration smoke test.
 mode = "rl"
 max_steps = 3
-seq_len = 1024
+seq_len = 2560
 output_dir = "/root/prime-rl/loop-validation"
 
 [run]
@@ -52,7 +52,7 @@ max_inflight = 4
 group_size = 4
 
 [orchestrator.train.sampling]
-max_completion_tokens = 768
+max_completion_tokens = 2048
 
 [[orchestrator.train.source]]
 name = "reverse-text"
@@ -62,7 +62,7 @@ env.agent.runtime.type = "subprocess"
 
 [inference.vllm]
 tensor_parallel_size = 2
-max_model_len = 1536
+max_model_len = 3072
 max_num_seqs = 4
 max_num_batched_tokens = 1024
 kv_cache_memory_bytes = 6442450944
