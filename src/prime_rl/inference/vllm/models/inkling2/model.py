@@ -147,6 +147,7 @@ class Inkling2DecoderLayer(nn.Module):
 
 class Inkling2Model(nn.Module):
     decoder_layer_class = Inkling2DecoderLayer
+
     def __init__(
         self,
         config: Inkling2ModelConfig,
@@ -285,6 +286,7 @@ class Inkling2ForCausalLM(nn.Module):
     """Text-only Inkling2 (`Inkling2ForConditionalGeneration` minus images)."""
 
     model_class = Inkling2Model
+    accepts_preprocessed_prompt_embeds = False
 
     # Weights mirror the checkpoint names after these substitutions, except for
     # the fused per-layer weights in ``_shards``.
@@ -314,7 +316,7 @@ class Inkling2ForCausalLM(nn.Module):
         config: Inkling2MMConfig = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         assert vllm_config.parallel_config.pipeline_parallel_size == 1
-        if vllm_config.model_config.enable_prompt_embeds:
+        if vllm_config.model_config.enable_prompt_embeds and not self.accepts_preprocessed_prompt_embeds:
             # The reference applies embed_norm to raw input embeddings, which
             # cannot be told apart from already-normalized ones here.
             raise ValueError("Inkling2 does not support prompt embeds")

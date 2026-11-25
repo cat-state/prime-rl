@@ -160,6 +160,9 @@ class Inkling2LoopModel(Inkling2Model):
 
 
 class Inkling2LoopForCausalLM(Inkling2ForCausalLM, SupportsLoRA):
+    # External embeddings must already include text embed_norm and replacement
+    # image features, matching the reference multimodal model's LM boundary.
+    accepts_preprocessed_prompt_embeds = True
     model_class = Inkling2LoopModel
 
     def __init__(self, *, vllm_config, prefix=""):

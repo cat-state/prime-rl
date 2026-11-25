@@ -42,6 +42,15 @@ for color in ("red", "blue"):
     torch.cuda.synchronize()
     start = time.monotonic()
     with torch.inference_mode():
+        embeds = model.model.get_input_embeddings()(inputs["input_ids"])
+        image_features = model.get_image_features(inputs["pixel_values"], inputs["image_grid_thw"], return_dict=True)
+        features = torch.cat(image_features.pooler_output).to(embeds)
+        mask = model.model.get_placeholder_mask(inputs["input_ids"], embeds, features, model.config.image_token_id)
+        embeds = embeds.masked_scatter(mask, features)
+        torch.save(
+            {"prompt_embeds": embeds[0].cpu(), "input_ids": inputs["input_ids"][0].cpu()},
+            args.output.with_name(f"image-reference-{color}-embeds.pt"),
+        )
         outputs = model.generate(**inputs, max_new_tokens=1024, do_sample=False)
     torch.cuda.synchronize()
     generated = outputs[0, inputs["input_ids"].shape[-1] :]
