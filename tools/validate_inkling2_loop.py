@@ -30,6 +30,7 @@ def main():
     )
     parser.add_argument("--checkpoint-reference", action="store_true")
     parser.add_argument("--router-replay", action="store_true")
+    parser.add_argument("--preprocessed-embeds", action="store_true")
     args = parser.parse_args()
     setup_logger("info")
     setup_torch_distributed()
@@ -77,8 +78,18 @@ def main():
     lengths = torch.tensor([8, 8], device="cuda")
     routes = torch.rand(1, 16, 16, 4, device="cuda").argsort(-1)[..., :2].contiguous() if args.router_replay else None
 
+    prepared_embeds = None
+    if args.preprocessed_embeds:
+        with torch.no_grad():
+            prepared_embeds = reference.model.embed_norm(reference.model.embed_tokens(ids)).detach()
+            # Simulate frozen image features inserted after text normalization.
+            prepared_embeds[:, 2:6] = torch.randn_like(prepared_embeds[:, 2:6]) * 3
+
     def loss(model):
-        output = model(ids, position_ids=positions, seq_lens=lengths, labels=ids, routed_experts=routes)
+        inputs = {"input_ids": ids}
+        if prepared_embeds is not None:
+            inputs = {"inputs_embeds": prepared_embeds, "inputs_embeds_preprocessed": True}
+        output = model(**inputs, position_ids=positions, seq_lens=lengths, labels=ids, routed_experts=routes)
         return output["loss"] / ids.numel()
 
     if args.checkpoint_reference:
@@ -132,6 +143,7 @@ def main():
         "fp32_reference": args.fp32_reference,
         "checkpoint_reference": args.checkpoint_reference,
         "router_replay": args.router_replay,
+        "preprocessed_embeds": args.preprocessed_embeds,
         "gradient_errors": errors,
     }
     if dist.get_rank() == 0:
