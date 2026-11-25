@@ -200,6 +200,9 @@ def train(config: TrainerConfig):
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
+    if config.model.frozen_image_cache is not None:
+        if config.model.vlm is not None or parallel_dims.cp_enabled:
+            raise ValueError("Frozen image cache cannot be combined with native VLM or context parallelism")
 
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     check_ckpt_dir(config.model)
@@ -221,6 +224,15 @@ def train(config: TrainerConfig):
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
     materialize_images = None
+    materialize_frozen_images = None
+    if config.model.frozen_image_cache is not None:
+        from prime_rl.trainer.models.inkling2_loop.frozen_images import FrozenImageCache
+        from prime_rl.trainer.models.inkling2_loop.modeling_inkling2_loop import Inkling2LoopForCausalLM
+
+        if not isinstance(model, Inkling2LoopForCausalLM):
+            raise ValueError("Frozen image cache currently supports only Inkling2LoopForCausalLM")
+        frozen_cache = FrozenImageCache(config.model.frozen_image_cache, model.config.hidden_size)
+        materialize_frozen_images = frozen_cache.materialize
     if config.model.vlm is not None:
         if not getattr(model, "supports_packed_multimodal_training", False):
             raise ValueError("Packed multimodal training requires model support")
@@ -229,7 +241,7 @@ def train(config: TrainerConfig):
     sparse_backward_allowed = config.loss.type != "custom"
 
     def prepare(micro_batch: TensorMicroBatch) -> TensorMicroBatch:
-        micro_batch = prepare_micro_batch(micro_batch, materialize_images)
+        micro_batch = prepare_micro_batch(micro_batch, materialize_images, materialize_frozen_images)
         micro_batch["sparse_head_backward"] = sparse_backward_allowed and sparse_head_backward(micro_batch)
         return micro_batch
 

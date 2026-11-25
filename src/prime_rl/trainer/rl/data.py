@@ -206,12 +206,26 @@ class FakeDataLoader:
 
 
 def prepare_micro_batch(
-    micro_batch: TensorMicroBatch, materialize_images: Callable[[MMRefs], dict[str, Tensor]] | None
+    micro_batch: TensorMicroBatch,
+    materialize_images: Callable[[MMRefs], dict[str, Tensor]] | None,
+    materialize_frozen_images: Callable[[MMRefs, int], dict[str, Tensor]] | None = None,
 ) -> TensorMicroBatch:
     """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
     micro_batch["mm_kwargs"] = None
     mm_refs = micro_batch.get("mm_refs")
     if mm_refs is not None:
+        if materialize_frozen_images is not None:
+            if materialize_images is not None or micro_batch["input_ids"].shape[0] != 1:
+                raise ValueError("Frozen images require one packed row and no native image materializer")
+            kwargs = materialize_frozen_images(mm_refs, micro_batch["input_ids"].shape[-1])
+            token_types = micro_batch.get("mm_token_type_ids")
+            if token_types is None or not torch.equal(token_types == 1, kwargs["image_token_mask"]):
+                raise ValueError("Frozen image spans must match rollout image token metadata")
+            if (token_types > 1).any():
+                raise ValueError("Frozen image cache does not support video")
+            micro_batch["mm_kwargs"] = kwargs
+            micro_batch["mm_refs"] = None
+            return micro_batch
         if materialize_images is None:
             raise ValueError("Received multimodal samples but [model.vlm] is not set")
         micro_batch["mm_kwargs"] = materialize_images(mm_refs)

@@ -370,6 +370,9 @@ InitConfig: TypeAlias = Annotated[ScratchInit | PretrainedInit, Field(discrimina
 
 
 class ModelConfig(BaseModelConfig):
+    frozen_image_cache: Path | None = None
+    """Opt-in Inkling loop frozen feature manifest; incompatible with native VLM and context parallelism."""
+
     vlm: VLMConfig | None = None
     """VLM configuration. Setting this enables vision-language model support."""
 
