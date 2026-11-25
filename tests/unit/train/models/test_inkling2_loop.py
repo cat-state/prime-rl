@@ -120,6 +120,15 @@ def test_loop_restart_gradients_packing_and_conversion():
         model.model(inputs_embeds=mixed, inputs_embeds_preprocessed=True, seq_lens=lengths)
         hook.remove()
         torch.testing.assert_close(seen[0], mixed, atol=1e-3, rtol=1e-3)
+        image_mask = torch.zeros_like(ids, dtype=torch.bool)
+        image_mask[:, :2] = True
+        inserted = model.model(
+            ids, image_features=mixed[image_mask], image_token_mask=image_mask, seq_lens=lengths
+        ).last_hidden_state
+        prepared = model.model(inputs_embeds=mixed, inputs_embeds_preprocessed=True, seq_lens=lengths).last_hidden_state
+        torch.testing.assert_close(inserted, prepared, atol=1e-3, rtol=1e-3)
+        with pytest.raises(ValueError, match="placeholder count"):
+            model.model(ids, image_features=mixed[image_mask][:1], image_token_mask=image_mask, seq_lens=lengths)
     with pytest.raises(ValueError, match="require inputs_embeds"):
         model.model(ids, seq_lens=lengths, inputs_embeds_preprocessed=True)
     # Zero gates make subsequent passes reproduce the first pass: simply continuing

@@ -483,6 +483,8 @@ class Inkling2Model(Inkling2PreTrainedModel):
         seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
         inputs_embeds_preprocessed: bool = False,
+        image_features: Tensor | None = None,
+        image_token_mask: Tensor | None = None,
     ) -> TextModelOutput:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -494,6 +496,20 @@ class Inkling2Model(Inkling2PreTrainedModel):
         # with image features inserted afterward. Never normalize those twice.
         if not inputs_embeds_preprocessed:
             inputs_embeds = self.embed_norm(inputs_embeds)
+        if (image_features is None) != (image_token_mask is None):
+            raise ValueError("Image features and image_token_mask must be supplied together")
+        if image_features is not None:
+            if inputs_embeds_preprocessed:
+                raise ValueError("Cannot insert image features into preprocessed embeddings")
+            if image_token_mask.dtype != torch.bool or image_token_mask.shape != inputs_embeds.shape[:2]:
+                raise ValueError("image_token_mask must be bool with shape [batch, sequence]")
+            if image_features.ndim != 2 or image_features.shape[-1] != inputs_embeds.shape[-1]:
+                raise ValueError("image_features must have shape [image_tokens, hidden_size]")
+            if image_token_mask.sum().item() != image_features.shape[0]:
+                raise ValueError("Image feature count does not match placeholder count")
+            inputs_embeds = inputs_embeds.masked_scatter(
+                image_token_mask.unsqueeze(-1), image_features.to(inputs_embeds)
+            )
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
@@ -587,6 +603,8 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel):
         seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
         inputs_embeds_preprocessed: bool = False,
+        image_features: Tensor | None = None,
+        image_token_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
         outputs = self.model(
             input_ids=input_ids,
@@ -596,6 +614,8 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel):
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             inputs_embeds_preprocessed=inputs_embeds_preprocessed,
+            image_features=image_features,
+            image_token_mask=image_token_mask,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = (
