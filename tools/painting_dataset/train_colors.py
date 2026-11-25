@@ -29,9 +29,12 @@ def main():
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--capture-gradients", action="store_true", help="Preserve pre-optimizer gradient shards for numerical diagnosis")
     parser.add_argument("--aot-eager", action="store_true", help="Diagnostic graph capture without Inductor code generation")
+    parser.add_argument("--dynamo-eager", action="store_true", help="Diagnostic Dynamo capture without AOTAutograd")
     args = parser.parse_args()
     if args.aot_eager and not (args.compile and args.capture_gradients):
         parser.error("--aot-eager requires --compile --capture-gradients")
+    if args.dynamo_eager and (args.aot_eager or not (args.compile and args.capture_gradients)):
+        parser.error("--dynamo-eager requires --compile --capture-gradients and excludes --aot-eager")
     setup_logger("info")
     setup_torch_distributed()
     torch.manual_seed(42)
@@ -46,6 +49,9 @@ def main():
     if args.aot_eager:
         destination = destination.with_name(destination.name + "-aot-eager")
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-aot-eager")
+    if args.dynamo_eager:
+        destination = destination.with_name(destination.name + "-dynamo-eager")
+        metrics_path = metrics_path.with_stem(metrics_path.stem + "-dynamo-eager")
     if destination.exists() or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
@@ -54,8 +60,8 @@ def main():
     original_compile = torch.nn.Module.compile
     def diagnostic_compile(module, *positional, **kwargs):
         kwargs.pop("mode", None)
-        return original_compile(module, *positional, backend="aot_eager", **kwargs)
-    with patch.object(torch.nn.Module, "compile", diagnostic_compile) if args.aot_eager else nullcontext():
+        return original_compile(module, *positional, backend="eager" if args.dynamo_eager else "aot_eager", **kwargs)
+    with patch.object(torch.nn.Module, "compile", diagnostic_compile) if args.aot_eager or args.dynamo_eager else nullcontext():
         model = setup_model(config, get_parallel_dims(config), False)
     get_lora_state().reset_adapter_parameters()
     model.train()
