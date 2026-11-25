@@ -2,7 +2,9 @@
 
 import argparse
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 import torch.distributed as dist
@@ -26,7 +28,10 @@ def main():
     parser.add_argument("--group-centered", action="store_true", help="Accumulate one update from four samples per prompt")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--capture-gradients", action="store_true", help="Preserve pre-optimizer gradient shards for numerical diagnosis")
+    parser.add_argument("--aot-eager", action="store_true", help="Diagnostic graph capture without Inductor code generation")
     args = parser.parse_args()
+    if args.aot_eager and not (args.compile and args.capture_gradients):
+        parser.error("--aot-eager requires --compile --capture-gradients")
     setup_logger("info")
     setup_torch_distributed()
     torch.manual_seed(42)
@@ -38,12 +43,20 @@ def main():
     if args.capture_gradients:
         destination = destination.with_name(destination.name + "-diagnostic")
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-diagnostic")
+    if args.aot_eager:
+        destination = destination.with_name(destination.name + "-aot-eager")
+        metrics_path = metrics_path.with_stem(metrics_path.stem + "-aot-eager")
     if destination.exists() or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
                          compile=CompileConfig(fullgraph=False) if args.compile else None, ep=1, cp=1, offload="none",
                          lora=LoRAConfig(rank=8, alpha=16, target_modules=["o_proj"]))
-    model = setup_model(config, get_parallel_dims(config), False)
+    original_compile = torch.nn.Module.compile
+    def diagnostic_compile(module, *positional, **kwargs):
+        kwargs.pop("mode", None)
+        return original_compile(module, *positional, backend="aot_eager", **kwargs)
+    with patch.object(torch.nn.Module, "compile", diagnostic_compile) if args.aot_eager else nullcontext():
+        model = setup_model(config, get_parallel_dims(config), False)
     get_lora_state().reset_adapter_parameters()
     model.train()
     params = [p for p in model.parameters() if p.requires_grad]
@@ -103,7 +116,7 @@ def main():
             metrics[-1]["sampled_logprobs"] = output["logprobs"][mask].detach().float().cpu().tolist()
         if dist.get_rank() == 0:
             metrics_path.write_text(json.dumps(metrics, indent=2))
-            print(metrics[-1], flush=True)
+            print({k: v for k, v in metrics[-1].items() if k != "sampled_logprobs"}, flush=True)
     state = get_lora_state().adapter_state_dict()
     full = {k: (v.full_tensor() if hasattr(v, "full_tensor") else v).detach().cpu().contiguous().clone()
             for k, v in state.items()}
