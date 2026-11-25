@@ -28,13 +28,14 @@ def main():
     parser.add_argument("dataset", type=Path)
     parser.add_argument("candidates", type=Path)
     parser.add_argument("--socket", default="/tmp/painting-render.sock")
+    parser.add_argument("--output-dir", default="renders")
     args = parser.parse_args()
     rows = {r["id"]: r for r in json.loads((args.dataset / "manifest.json").read_text())["records"]}
-    destination = args.candidates / "renders"
+    destination = args.candidates / args.output_dir
     destination.mkdir(exist_ok=True)
     for path in sorted(args.candidates.glob("*.json")):
         candidate = json.loads(path.read_text())
-        record = {"id": candidate["id"], "valid": False}
+        record = {"id": candidate["id"], "valid": False, "renderer_socket": args.socket}
         try:
             source = extract(candidate)
             with Image.open(rows[candidate["id"]]["image"]) as target:
