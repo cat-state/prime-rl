@@ -1,0 +1,36 @@
+# Small learning pilot with disjoint held-out prompts; not a full benchmark.
+#   uv run rl @ configs/debug/inkling2-loop-rl.toml @ configs/debug/inkling2-loop-rl-compiled.toml @ configs/debug/inkling2-loop-rl-learning.toml
+max_steps = 12
+seq_len = 4608
+
+[orchestrator]
+batch_size = 4
+
+[orchestrator.train.sampling]
+max_completion_tokens = 4096
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.taskset.dataset_split = "train[:8]"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.eval]
+interval = 6
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 4096
+
+[[orchestrator.eval.source]]
+name = "reverse-text-heldout"
+select.limit = 4
+env.taskset.id = "reverse-text"
+env.taskset.dataset_split = "train[8:12]"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference.vllm]
+max_model_len = 5120
+kv_cache_memory_bytes = 10737418240
+
