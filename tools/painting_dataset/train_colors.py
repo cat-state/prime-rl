@@ -4,6 +4,7 @@ Uses reward as a zero-baseline advantage, not group-centered GRPO. This small
 integration test cannot demonstrate generalization when baseline accuracy is 1.
 """
 
+import argparse
 import json
 from pathlib import Path
 
@@ -24,11 +25,15 @@ from tools.painting_dataset.colors import reward
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", type=Path, default=Path("loop-validation/color-task"))
+    parser.add_argument("--group-centered", action="store_true", help="Accumulate one update from four samples per prompt")
+    args = parser.parse_args()
     setup_logger("info")
     setup_torch_distributed()
     torch.manual_seed(42)
-    root = Path("loop-validation/color-task")
-    destination = root / "adapter-step4"
+    root = args.dataset
+    destination = root / ("adapter-group-step1" if args.group_centered else "adapter-step4")
     if destination.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
@@ -42,13 +47,24 @@ def main():
     cache = FrozenImageCache(root / "features/manifest.json", model.config.hidden_size)
     metrics = []
     rows = json.loads((root / "manifest.json").read_text())["records"]
+    samples = []
     for row in (r for r in rows if r["split"] == "train"):
-        record = json.loads((root / "rollouts-base" / f"{row['id']}-0.json").read_text())
+        group = [json.loads((root / "rollouts-base" / f"{row['id']}-{i}.json").read_text())
+                 for i in range(4 if args.group_centered else 1)]
+        scores = [reward(r["response"]["raw_output"], row["answer"], r["response"]["finish_reason"]) for r in group]
+        baseline = sum(scores) / len(scores) if args.group_centered else 0
+        for record, score in zip(group, scores, strict=True):
+            assert score == record["reward"]
+            if score != baseline:
+                samples.append((row, record, score - baseline))
+    if not samples:
+        raise ValueError("No nonzero advantages; refusing an empty update")
+    for index, (row, record, advantage) in enumerate(samples):
         response = record["response"]
         score = reward(response["raw_output"], row["answer"], response["finish_reason"])
         assert score == record["reward"]
         batch = rollout_to_microbatch(response, Path(row["image"]).read_bytes(),
-                                      temperature=record["request"]["temperature"], advantage=score, expected_policy="base")
+                                      temperature=record["request"]["temperature"], advantage=advantage, expected_policy="base")
         tensors = prepare_micro_batch(DataLoader._micro_batch_to_tensor(None, batch), None, cache.materialize)
         ids = tensors["input_ids"].cuda()
         output = model(input_ids=ids, position_ids=tensors["position_ids"].cuda(),
@@ -60,7 +76,9 @@ def main():
         mask[:, -1] = False
         old = tensors["inference_logprobs"].roll(-1, dims=-1).cuda()
         ratio = (output["logprobs"][mask] - old[mask]).exp()
-        loss = -(torch.minimum(ratio, ratio.clamp(.8, 1.2)) * score).mean()
+        loss = -torch.minimum(ratio * advantage, ratio.clamp(.8, 1.2) * advantage).mean()
+        if args.group_centered:
+            loss = loss / len(samples)
         loss.backward()
         def local(t):
             return t.to_local() if hasattr(t, "to_local") else t
@@ -68,9 +86,11 @@ def main():
         dist.all_reduce(norm)
         if not torch.isfinite(norm) or (score > 0 and norm <= 0):
             raise ValueError("Invalid scored image gradients")
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-        metrics.append({"id": row["id"], "reward": score, "loss": loss.item(), "gradient_norm": norm.sqrt().item()})
+        if not args.group_centered or index == len(samples) - 1:
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        metrics.append({"id": row["id"], "reward": score, "advantage": advantage,
+                        "loss": loss.item(), "gradient_norm": norm.sqrt().item()})
         if dist.get_rank() == 0:
             (root / "scored-update-metrics.json").write_text(json.dumps(metrics, indent=2))
             print(metrics[-1], flush=True)
