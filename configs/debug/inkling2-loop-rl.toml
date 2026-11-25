@@ -1,0 +1,73 @@
+# Experimental 2-trainer / 2-inference LoRA RL integration smoke test.
+mode = "rl"
+max_steps = 3
+seq_len = 1024
+output_dir = "/root/prime-rl/loop-validation"
+
+[run]
+name = "reverse-text-lora-smoke"
+
+[model]
+name = "/dev/shm/inkling2-loop-bf16"
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 2
+gpus_per_node = 4
+
+[env_vars]
+INKLING_MULTIMEM_AR = "0"
+
+[trainer]
+enable_router_replay = true
+annotations = false
+
+[trainer.model]
+conversion_dir = "/dev/shm/inkling2-training"
+compile = "None"
+ep = 1
+cp = 1
+offload = "none"
+
+[trainer.model.lora]
+rank = 8
+alpha = 16
+target_modules = ["o_proj"]
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+batch_size = 8
+
+[orchestrator.renderer]
+name = "inkling-2"
+reasoning_effort = "none"
+
+[orchestrator.concurrency]
+min_inflight = 4
+max_inflight = 4
+
+[orchestrator.train]
+group_size = 4
+
+[orchestrator.train.sampling]
+max_completion_tokens = 768
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference.vllm]
+tensor_parallel_size = 2
+max_model_len = 1536
+max_num_seqs = 4
+max_num_batched_tokens = 1024
+kv_cache_memory_bytes = 6442450944
+enforce_eager = true
+enable_flashinfer_autotune = false
+lora_target_modules = ["wo_ud"]
+tokenizer_mode = "hf"
+reasoning_parser = "inkling2"

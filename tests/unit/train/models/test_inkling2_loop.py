@@ -9,6 +9,7 @@ from safetensors.torch import save_file
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.inkling2_loop import Inkling2LoopConfig, Inkling2LoopForCausalLM, Inkling2LoopTextConfig
 from prime_rl.trainer.models.inkling2_loop.converting_inkling2_loop import DequantizeExperts, MessageQueries
+from prime_rl.trainer.rl.warmup import warmup_routed_experts
 from prime_rl.utils.weights import load_state_dict, load_state_dict_keys
 
 
@@ -98,6 +99,8 @@ def test_quantized_experts():
 def test_loop_restart_gradients_packing_and_conversion():
     torch.manual_seed(17)
     model = Inkling2LoopForCausalLM.from_config(tiny_config(), dtype=torch.bfloat16).cuda()
+    warmup_routes = warmup_routed_experts(model, 16, torch.Generator().manual_seed(7))
+    assert warmup_routes.shape == (1, 16, 16, 2)
     ids = torch.randint(0, 128, (1, 16), device="cuda")
     lengths = torch.tensor([16], device="cuda")
     # Zero gates make subsequent passes reproduce the first pass: simply continuing

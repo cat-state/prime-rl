@@ -1,5 +1,7 @@
 """Inkling 2 Mini's shared-weight loop and cross-pass messages for text training."""
 
+import re
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -118,6 +120,13 @@ class Inkling2LoopDecoderLayer(Inkling2DecoderLayer):
 class Inkling2LoopModel(Inkling2Model):
     decoder_layer_class = Inkling2LoopDecoderLayer
 
+    @property
+    def num_execution_layers(self):
+        config = self.config
+        return config.num_hidden_layers + (config.loop_layer_index_end - config.loop_layer_index_start) * (
+            config.loop_num_passes - 1
+        )
+
     def __init__(self, config):
         super().__init__(config)
         self.attn_res.float()
@@ -132,7 +141,7 @@ class Inkling2LoopModel(Inkling2Model):
 
     def run_layers(self, hidden_states, block_states, position_ids, cu_seqlens, doc_ids, block_masks, routed_experts):
         start, end = self.config.loop_layer_index_start, self.config.loop_layer_index_end
-        visits = self.config.num_hidden_layers + (end - start) * (self.config.loop_num_passes - 1)
+        visits = self.num_execution_layers
         if routed_experts is not None and routed_experts.shape[-2] != visits:
             raise ValueError(f"Loop router replay requires {visits} execution visits, got {routed_experts.shape[-2]}")
         visit = 0
@@ -177,6 +186,22 @@ class Inkling2LoopModel(Inkling2Model):
 class Inkling2LoopForCausalLM(Inkling2ForCausalLM):
     text_config_class = Inkling2LoopTextConfig
     model_class = Inkling2LoopModel
+    lora_export_target_modules = ["wo_ud"]
+
+    def convert_adapter_to_hf(self, state_dict):
+        """Export output-projection adapters for this fork's unrolled inference model."""
+        start, end = self.config.loop_layer_index_start, self.config.loop_layer_index_end
+        visits = list(range(start)) + list(range(start, end)) * self.config.loop_num_passes
+        visits += list(range(end, self.config.num_hidden_layers))
+        expanded = {}
+        for name, value in state_dict.items():
+            match = re.fullmatch(r"model\.layers\.(\d+)\.self_attn\.o_proj\.(lora_[AB]\.weight)", name)
+            if match is None:
+                raise ValueError("Inkling loop LoRA currently supports only self_attn.o_proj")
+            for visit, original in enumerate(visits):
+                if original == int(match[1]):
+                    expanded[f"model.layers.{visit}.attn.wo_ud.{match[2]}"] = value
+        return expanded
 
     def fp32_modules(self):
         modules = [self.model.attn_res, self.model.message_input]

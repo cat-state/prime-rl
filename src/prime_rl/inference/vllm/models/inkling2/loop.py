@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from vllm.distributed import tensor_model_parallel_all_reduce
+from vllm.model_executor.models.interfaces import SupportsLoRA
 from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigConvertorBase
 
 from .configs import Inkling2MMConfig
@@ -158,13 +159,18 @@ class Inkling2LoopModel(Inkling2Model):
         return self.norm(self.mix(blocks, hidden, self.attn_res.output_query)[0])
 
 
-class Inkling2LoopForCausalLM(Inkling2ForCausalLM):
+class Inkling2LoopForCausalLM(Inkling2ForCausalLM, SupportsLoRA):
     model_class = Inkling2LoopModel
 
     def __init__(self, *, vllm_config, prefix=""):
+        if vllm_config.lora_config is not None and vllm_config.lora_config.target_modules != ["wo_ud"]:
+            raise ValueError("Inkling loop LoRA requires lora_target_modules=['wo_ud'] (output projections only)")
         if vllm_config.quant_config is not None:
             raise ValueError("Loop training inference requires a dequantized BF16 checkpoint")
         super().__init__(vllm_config=vllm_config, prefix=prefix)
+        if vllm_config.lora_config is not None:
+            for layer in self.model.layers:
+                layer.attn.output_lora = True
 
     def load_weights(self, weights):
         for layer in self.model.layers:

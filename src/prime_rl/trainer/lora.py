@@ -143,7 +143,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
 
     lora_state = setup_lora_state()
     if isinstance(model, PreTrainedModelPrimeRL):
-        lora_state.register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
+        lora_state.register_adapter_state_dict_converter(model.convert_adapter_to_hf)
     uses_gpt_oss_moe_adapter = (
         isinstance(model, PreTrainedModelPrimeRL) and getattr(model.config, "model_type", None) == "gpt_oss"
     )
@@ -207,6 +207,7 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
     save_path = Path(save_path)
 
     target_modules = {name.split(".")[-1] for name, module in model.named_modules() if isinstance(module, LoRAModule)}
+    target_modules = getattr(model, "lora_export_target_modules", target_modules)
 
     adapter_config = {
         "peft_type": "LORA",

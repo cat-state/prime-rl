@@ -29,6 +29,7 @@ from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 from vllm import LLM, ModelRegistry, SamplingParams
 from vllm.distributed.parallel_state import cleanup_dist_env_and_memory
 from vllm.inputs import TokensPrompt
+from vllm.lora.request import LoRARequest
 from vllm.plugins import load_general_plugins
 
 from prime_rl.configs.trainer import ModelConfig
@@ -771,6 +772,7 @@ def vllm_logprobs(
     rows: list[list[int]],
     moe: bool,
     plugin_configs: dict[str, type[PretrainedConfig]],
+    lora_path: Path | None = None,
 ) -> tuple[list[torch.Tensor], torch.Tensor | None]:
     """vLLM's prompt logprobs of the rows from the trainer's weights, and for MoE models the experts it routed every
     token to, as [tokens, layers, top_k]."""
@@ -789,6 +791,7 @@ def vllm_logprobs(
             [TokensPrompt(prompt_token_ids=row) for row in rows],
             SamplingParams(max_tokens=1, prompt_logprobs=0, detokenize=False),
             use_tqdm=False,
+            lora_request=LoRARequest("loop-adapter", 1, str(lora_path)) if lora_path else None,
         )
     finally:
         llm.llm_engine.engine_core.shutdown()
@@ -866,3 +869,44 @@ def test_matches_vllm(
         f"max |logprob diff| {max_abs:.2e} > {case.max_abs:.0e}; mismatch KL {mismatch_kl:.2e}"
     )
     assert mismatch_kl <= case.mismatch_kl, f"mismatch KL {mismatch_kl:.2e} > {case.mismatch_kl:.0e}"
+
+
+def test_inkling2_loop_lora(rows, plugin_configs, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from safetensors.torch import save_file
+
+    from prime_rl.configs.trainer import LoRAConfig
+    from prime_rl.trainer.lora import apply_lora_to_model, get_lora_state, save_lora_config
+
+    monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+    monkeypatch.setenv("VLLM_NO_USAGE_STATS", "1")
+    monkeypatch.setenv("INKLING_MULTIMEM_AR", "0")
+    case = next(case for case in CASES if case.name == "inkling2_loop")
+    case.config.save_pretrained(tmp_path)
+    model = build_trainer_model(tmp_path, case)
+    base_state = broadcast_state_dict(model)
+    fp32_params = {param for module in model.fp32_modules() for param in module.parameters()}
+    for param in model.parameters():
+        if param not in fp32_params:
+            param.data = param.data.bfloat16()
+    before = torch.cat(trainer_logprobs(model, rows))
+    apply_lora_to_model(model, LoRAConfig(rank=8, alpha=16, target_modules=["o_proj"]))
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if name.endswith("lora_B"):
+                param.normal_(std=0.1)
+    adapter_path = tmp_path / "adapter"
+    adapter_path.mkdir()
+    adapter = {k: v.cpu().contiguous().clone() for k, v in get_lora_state().adapter_state_dict().items()}
+    assert len(adapter) == 32  # Two tensors per execution visit, including repeated core passes.
+    save_file(adapter, adapter_path / "adapter_model.safetensors")
+    save_lora_config(model, adapter_path, rank=8, alpha=16, dropout=0)
+    case = replace(case, engine={**case.engine, "enable_lora": True, "lora_target_modules": ["wo_ud"]})
+    sampled, routes = vllm_logprobs(tmp_path, case, base_state, rows, True, plugin_configs, adapter_path)
+    trained = torch.cat(trainer_logprobs(model, rows, routes.unsqueeze(0).cuda()))
+    delta = trained - torch.cat(sampled)
+    print(f"LoRA max logprob error {delta.abs().max().item():.6g}; KL {(delta.expm1() - delta).mean().item():.6g}")
+    assert delta.abs().max() <= case.max_abs
+    assert (delta.expm1() - delta).mean() <= case.mismatch_kl
+    assert (trained - before).abs().mean() > 0.02, "Adapter had no meaningful effect"

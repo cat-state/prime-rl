@@ -240,6 +240,8 @@ class Inkling2Attention(nn.Module, AttentionLayerBase):
             tau,
             output,
         )
+        if getattr(self, "output_lora", False):
+            return self.wo_ud(output)[0]
         return nn.functional.linear(output, self.wo_ud.weight)
 
     @eager_break_during_capture

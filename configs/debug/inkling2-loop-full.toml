@@ -1,0 +1,23 @@
+# Full-weight systems smoke test; synthetic data is not an RL learning evaluation.
+max_steps = 3
+output_dir = "/root/prime-rl/loop-validation/full-weight-smoke"
+annotations = false
+
+[model]
+name = "/dev/shm/inkling2-loop-bf16"
+conversion_dir = "/dev/shm/inkling2-training"
+seq_len = 128
+compile = "None"
+ep = 1
+cp = 1
+offload = "none"
+
+[data.fake]
+batch_size = 4
+
+[optim]
+type = "sign_sgd"
+lr = 1e-7
+
+[weight_broadcast]
+type = "filesystem"

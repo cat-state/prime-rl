@@ -18,6 +18,14 @@ FP32 masters and activation checkpointing in the tiny distributed check.
 Comparison against a reference without checkpointing still exceeds the gradient
 criterion; compiled training remains experimental pending downstream validation.
 
+Output-projection LoRA is available experimentally with trainer targets
+`["o_proj"]` and inference `lora_target_modules = ["wo_ud"]`. Set
+`INKLING_MULTIMEM_AR=0` for vLLM. The shared training adapters are expanded to
+execution visits when broadcast; these exported adapters target this fork's
+inference layout and are not portable to the standard Transformers model.
+Other adapter targets are rejected. See `configs/debug/inkling2-loop-rl.toml`
+for the two-trainer/two-inference integration configuration.
+
 ## Install and infer
 
 ```bash

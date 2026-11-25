@@ -423,7 +423,8 @@ class Inkling2ForCausalLM(nn.Module):
             raise ValueError(f"Unexpected expert tensor: {name}")
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        params = dict(self.named_parameters())
+        parameter_names = {name.replace(".base_layer.", "."): name for name, _ in self.named_parameters()}
+        params = {name.replace(".base_layer.", "."): parameter for name, parameter in self.named_parameters()}
         num_layers = self.text_config.num_hidden_layers
         num_experts = self.text_config.n_routed_experts
         intermediate_size = self.text_config.intermediate_size
@@ -488,7 +489,7 @@ class Inkling2ForCausalLM(nn.Module):
             raise ValueError(f"Missing checkpoint tensors: {sorted(missing)}")
         for moe in expert_modules.values():
             moe.refresh_router_bias()
-        return loaded
+        return {parameter_names.get(name, name) for name in loaded}
 
     def _find_module(self, dotted_name: str) -> Inkling2MoE:
         module = self
