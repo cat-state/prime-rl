@@ -148,7 +148,9 @@ class Inkling2LoopModel(Inkling2Model):
 
         def run(index, hidden, blocks, messages=None):
             nonlocal visit
-            routes = routed_experts[..., visit, :] if routed_experts is not None else None
+            # Checkpoint recomputation can materialize saved route views. Give
+            # compiled forward/backward the same dense layout at the boundary.
+            routes = routed_experts[..., visit, :].contiguous() if routed_experts is not None else None
             visit += 1
             return self.layers[index](
                 hidden,
