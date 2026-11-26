@@ -66,11 +66,11 @@ class FrozenEncoderClient:
 
 
 class SharedInferenceGenerator:
-    def __init__(self, *, max_model_len=6144, kv_cache_gib=24, adapter: Path | None = None, policy="base"):
+    def __init__(self, *, max_model_len=6144, kv_cache_gib=24, tensor_parallel_size=1, max_num_seqs=1, adapter: Path | None = None, policy="base"):
         from vllm import LLM
         from vllm.lora.request import LoRARequest
-        self.llm = LLM(model="/dev/shm/inkling2-loop-bf16", tensor_parallel_size=1,
-                       enable_prompt_embeds=True, enforce_eager=False, max_num_seqs=1,
+        self.llm = LLM(model="/dev/shm/inkling2-loop-bf16", tensor_parallel_size=tensor_parallel_size,
+                       enable_prompt_embeds=True, enforce_eager=False, max_num_seqs=max_num_seqs,
                        max_model_len=max_model_len, max_num_batched_tokens=4096,
                        kv_cache_memory_bytes=kv_cache_gib * 1024**3, enable_prefix_caching=True,
                        enable_flashinfer_autotune=False, tokenizer_mode="hf", enable_lora=True,
@@ -84,27 +84,37 @@ class SharedInferenceGenerator:
         self.lora = LoRARequest(policy, 1, str(adapter.resolve())) if adapter else None
 
     def __call__(self, encoded, request):
+        return self.generate_batch([(encoded, request)])[0]
+
+    def generate_batch(self, jobs):
         from vllm import SamplingParams
-        if request["policy"] != self.policy:
-            raise ValueError("Generator policy mismatch")
         if self.adapter and adapter_digest(self.adapter) != self.digest:
             raise ValueError("Adapter changed")
-        item = torch.load(encoded["features"], weights_only=True, map_location="cpu")
-        if item["input_ids"].flatten().tolist() != encoded["input_ids"]:
-            raise ValueError("Encoded feature tokens changed")
+        prompts, params = [], []
+        for encoded, request in jobs:
+            if request["policy"] != self.policy:
+                raise ValueError("Generator policy mismatch")
+            item = torch.load(encoded["features"], weights_only=True, map_location="cpu")
+            if item["input_ids"].flatten().tolist() != encoded["input_ids"]:
+                raise ValueError("Encoded feature tokens changed")
+            prompts.append({"prompt_embeds": item["prompt_embeds"]})
+            params.append(SamplingParams(temperature=request["temperature"], seed=request["seed"],
+                                         max_tokens=request["max_tokens"], logprobs=0, stop_token_ids=[self.stop]))
         self.llm.reset_prefix_cache()
         start = time.monotonic()
-        completion = self.llm.generate([{"prompt_embeds": item["prompt_embeds"]}],
-            SamplingParams(temperature=request["temperature"], seed=request["seed"], max_tokens=request["max_tokens"],
-                           logprobs=0, stop_token_ids=[self.stop]), lora_request=self.lora, use_tqdm=False)[0].outputs[0]
+        results = self.llm.generate(prompts, params, lora_request=self.lora, use_tqdm=False)
         seconds = time.monotonic() - start
-        routes = np.ascontiguousarray(completion.routed_experts)
-        logprobs = [p[t].logprob for p, t in zip(completion.logprobs, completion.token_ids, strict=True)]
-        return {"policy": self.policy, "adapter_sha256": self.digest, "temperature": request["temperature"],
+        responses = []
+        for (encoded, request), result in zip(jobs, results, strict=True):
+            completion = result.outputs[0]
+            routes = np.ascontiguousarray(completion.routed_experts)
+            logprobs = [p[t].logprob for p, t in zip(completion.logprobs, completion.token_ids, strict=True)]
+            responses.append({"policy": self.policy, "adapter_sha256": self.digest, "temperature": request["temperature"],
                 "seed": request["seed"], "prompt_token_ids": encoded["input_ids"],
                 "completion_ids": list(completion.token_ids), "completion_logprobs": logprobs,
                 "finish_reason": completion.finish_reason,
                 "raw_output": self.tokenizer.decode(completion.token_ids, skip_special_tokens=False),
-                "generation_seconds": seconds,
+                "generation_seconds": seconds, "generation_batch_size": len(jobs),
                 "routed_experts": {"start": 0, "shape": list(routes.shape), "dtype": routes.dtype.name,
-                                   "data": base64.b64encode(routes.tobytes()).decode()}}
+                                   "data": base64.b64encode(routes.tobytes()).decode()}})
+        return responses
