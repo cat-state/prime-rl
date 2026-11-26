@@ -1,11 +1,12 @@
 """BF16 loop inference with independent KV/short-convolution caches per visit.
 
 Inference unrolls the core visits; checkpoint loading fans each shared trainer
-weight out to its visits. This trades inference memory for the existing vLLM
-cache and weight-reload machinery.
+weight out to its visits. INKLING_SHARE_LOOP_EXPERTS=1 opts into storage sharing
+for BF16 Triton expert weights while retaining separate visit/cache identities.
 """
 
 import copy
+import os
 import re
 
 import torch
@@ -18,6 +19,7 @@ from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigC
 from .configs import Inkling2MMConfig
 from .model import Inkling2AttnRes, Inkling2DecoderLayer, Inkling2ForCausalLM, Inkling2Model
 from .ops.attention import compute_log_scaling_tau
+from .shared_experts import share_visit_experts, sharing_scope, storage_report
 
 
 class Inkling2LoopMMConfig(Inkling2MMConfig):
@@ -66,6 +68,7 @@ class Inkling2LoopDecoderLayer(Inkling2DecoderLayer):
                     for stream in ("attn", "k", "v", "mlp")
                 }
             )
+            share_visit_experts(self.mlp.experts.routed_experts, original)
 
 
 class Inkling2LoopModel(Inkling2Model):
@@ -83,7 +86,12 @@ class Inkling2LoopModel(Inkling2Model):
         expanded.original_layer_ids = self.visits
         expanded.num_hidden_layers = len(self.visits)
         expanded.local_layer_ids = [i for i, original in enumerate(self.visits) if original in config.local_layer_ids]
-        super().__init__(expanded, quant_config, prefix)
+        share_experts = os.environ.get("INKLING_SHARE_LOOP_EXPERTS", "0") == "1"
+        with sharing_scope(share_experts) as groups:
+            super().__init__(expanded, quant_config, prefix)
+        # A plain dictionary avoids registering duplicate module paths.
+        self.shared_expert_groups = groups
+        storage_report(groups)
         self.config = config
         self.attn_res = Inkling2AttnRes(config)
         shape = (2 * (end - start), config.hidden_size)
@@ -176,6 +184,7 @@ class Inkling2LoopForCausalLM(Inkling2ForCausalLM, SupportsLoRA):
                 layer.attn.output_lora = True
 
     def load_weights(self, weights):
+        storage_report(self.model.shared_expert_groups)
         for layer in self.model.layers:
             if len(layer.attn.split_sizes) == 7:
                 parameter = layer.attn.qkvr.weight
@@ -201,6 +210,8 @@ class Inkling2LoopForCausalLM(Inkling2ForCausalLM, SupportsLoRA):
         self.text_config = copy.deepcopy(original_config)
         self.text_config.num_hidden_layers = len(self.model.visits)
         try:
-            return super().load_weights(expanded_weights())
+            loaded = super().load_weights(expanded_weights())
+            storage_report(self.model.shared_expert_groups)
+            return loaded
         finally:
             self.text_config = original_config
