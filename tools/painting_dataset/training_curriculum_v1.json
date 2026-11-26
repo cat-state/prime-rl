@@ -1,0 +1,29 @@
+{
+  "status": "Training-only proposal; no new model generation, optimizer, or metric change performed",
+  "evidence": "Remote loop-validation/train32-format-audit-v1/audit.json and compact-valid-candidates.json; no heldout data used",
+  "diagnosis": {
+    "completion": "10 of 11 truncations occur after the final-answer marker, so bounded programs are needed as well as less reasoning. Median valid program is54 lines/3309.5 bytes;66 of74 valid programs exceed requested40 lines.",
+    "reasoning": "Median prefinal character fraction is0.639 for valid turns, a character proxy including control markers, not exact token allocation. Do not silently suppress thinking or change arithmetic; version any generation-protocol intervention.",
+    "syntax": "Recurring immutable assignment, reserved identifier patch, unsupported ternary operator, and a local variable shadowing hash. Existing validator correctly rejects them; do not weaken renderer constraints.",
+    "complexity": "Two expanded shader-work budget failures indicate helpers can multiply work even when line count is modest. Track helper calls/expanded AST work rather than line count alone."
+  },
+  "scaffold": {
+    "source": "compact_paint_scaffold_v1.wgsl",
+    "provenance": "New generic abstract arrangement, not derived from any evaluation painting",
+    "scope": "17 lines, two shape helpers, three composed primitives, mutable col and explicit vector clamp",
+    "validation": "Pending CPU Naga validation because remote SSH timed out; no render performed"
+  },
+  "proposed_version": "paint-edit-curriculum-v1",
+  "stages": [
+    {"stage": 1, "task": "Supply generic valid scaffold and target image. Request changes only to colors, centers and sizes; return the complete small WGSL program. Keep one final code block and existing render contract.", "purpose": "Isolate image-conditioned parameter adjustment and finishing valid code from program architecture invention."},
+    {"stage": 2, "task": "Allow adding or removing a small number of oval/rectangle primitives while retaining helpers, then review a rendered result and revise once.", "purpose": "Learn composition edits with bounded action complexity and genuine image feedback."},
+    {"stage": 3, "task": "Mix scaffold editing with from-scratch train-artwork recreation, progressively reducing scaffold frequency.", "purpose": "Preserve the original autonomous WGSL generation objective rather than replacing it with permanent parameter fitting."}
+  ],
+  "controls": [
+    "Use training artworks or synthetic targets only; keep heldout sealed for final evaluation.",
+    "Version prompt/history/budgets and compare matching baseline conditions before attributing gains to RL.",
+    "Retain final-only invalid0 and unchanged perceptual reward; log compile failures, truncation phase, tokens, code bytes and expanded work separately.",
+    "No compile-only reward bonus; require image agreement and recognizable composition.",
+    "Existing shortest-valid program inventory is a review shortlist, not an automatically approved imitation dataset. Shorter programs can have worse visual composition."
+  ]
+}
