@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--dynamo-eager", action="store_true", help="Diagnostic Dynamo capture without AOTAutograd")
     parser.add_argument("--forward-only", action="store_true", help="Diagnostic fixed-token forward comparison without backward")
     parser.add_argument("--attention-boundary", action="store_true", help="Diagnostic graph break around independently compiled attention")
+    parser.add_argument("--compiler-audit", action="store_true", help="Save Dynamo counters in a separate diagnostic run")
     args = parser.parse_args()
     if args.aot_eager and not (args.compile and args.capture_gradients):
         parser.error("--aot-eager requires --compile --capture-gradients")
@@ -61,6 +62,9 @@ def main():
             parser.error("--attention-boundary requires --compile --capture-gradients")
         destination = destination.with_name(destination.name + "-attention-boundary")
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-attention-boundary")
+    if args.compiler_audit:
+        destination = destination.with_name(destination.name + "-audit")
+        metrics_path = metrics_path.with_stem(metrics_path.stem + "-audit")
     if (destination.exists() and not args.forward_only) or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
@@ -149,6 +153,11 @@ def main():
         if dist.get_rank() == 0:
             metrics_path.write_text(json.dumps(metrics, indent=2))
             print({k: v for k, v in metrics[-1].items() if k != "sampled_logprobs"}, flush=True)
+    if args.compiler_audit:
+        from torch._dynamo.utils import counters
+
+        audit = {str(group): {str(key): value for key, value in counts.items()} for group, counts in counters.items()}
+        (root / f"{destination.name}-rank{dist.get_rank()}-compiler.json").write_text(json.dumps(audit, indent=2))
     if args.forward_only:
         dist.destroy_process_group()
         return
