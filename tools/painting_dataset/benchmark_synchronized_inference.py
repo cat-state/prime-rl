@@ -41,21 +41,25 @@ def main():
     parser.add_argument("--replicas", type=int, default=1)
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--barrier-dir", type=Path)
+    parser.add_argument("--total-batches", type=int, nargs="+", default=[2, 8, 16, 32])
+    parser.add_argument("--kv-gib", type=int, default=24)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = json.loads(args.manifest.read_text())
     items = [torch.load(row["features"], map_location="cpu", weights_only=True)
-             for row in manifest["records"][:32]]
+             for row in manifest["records"][:max(args.total_batches)]]
+    items = [items[i % len(items)] for i in range(max(args.total_batches))]
     llm = LLM(model="/dev/shm/inkling2-loop-bf16", tensor_parallel_size=args.tp,
-              enable_prompt_embeds=True, enforce_eager=not args.graphs, max_num_seqs=32,
+              enable_prompt_embeds=True, enforce_eager=not args.graphs,
+              max_num_seqs=max(args.total_batches) // args.replicas,
               max_model_len=1024, max_num_batched_tokens=4096,
-              kv_cache_memory_bytes=24 * 1024**3, enable_prefix_caching=True,
+              kv_cache_memory_bytes=args.kv_gib * 1024**3, enable_prefix_caching=True,
               enable_flashinfer_autotune=False, tokenizer_mode="hf",
               enable_lora=True, max_lora_rank=8, lora_target_modules=["wo_ud"],
               aux_output_config={"enable_return_routed_experts": True})
     params = SamplingParams(temperature=0, seed=42, max_tokens=256,
                             min_tokens=256, ignore_eos=True, logprobs=0)
-    for total_batch in (2, 8, 16, 32):
+    for total_batch in args.total_batches:
         selected = items[:total_batch][args.rank::args.replicas]
         batch = len(selected)
         prompts = [{"prompt_embeds": item["prompt_embeds"]} for item in selected]
@@ -75,6 +79,7 @@ def main():
                 assert np.isfinite([p[t].logprob for p, t in
                                    zip(completion.logprobs, completion.token_ids, strict=True)]).all()
             row = dict(tp=args.tp, graphs=args.graphs, batch=batch, total_batch=total_batch,
+                       kv_gib_per_gpu=args.kv_gib,
                        rank=args.rank, replicas=args.replicas, repeat=repeat,
                        warmup=repeat == 0, start=start, end=end, seconds=end-start,
                        input_tokens=input_tokens, output_tokens=output_tokens,
