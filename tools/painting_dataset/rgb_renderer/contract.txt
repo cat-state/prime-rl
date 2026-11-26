@@ -1,0 +1,9 @@
+Return only WGSL source defining fn paint(uv: vec2f) -> vec3f.
+uv=(0,0) is the top-left and uv=(1,1) the bottom-right of the image.
+Pixels are sampled at their centers. Return display RGB channels in [0,1];
+values are clamped and quantized to 8-bit PNG without gamma conversion.
+Use procedural math, local scalar/vector variables, conditionals and helper functions.
+Do not include entry points, bindings, global variables, arrays, structs or loops.
+No target-image sampling, textures, file access, network access or external resources.
+Maximum source size: 32768 UTF-8 bytes. Maximum helper nesting: 16.
+The expanded function/expression work is limited to 4096 nodes.
