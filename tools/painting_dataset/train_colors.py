@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--attention-boundary", action="store_true", help="Diagnostic graph break around independently compiled attention")
     parser.add_argument("--compiler-audit", action="store_true", help="Save Dynamo counters in a separate diagnostic run")
     parser.add_argument("--capture-layer-outputs", action="store_true", help="Diagnostic sampled activation capture outside compiled layer calls")
+    parser.add_argument("--capture-first-layer-inputs", action="store_true", help="Save real first-layer inputs and full output for standalone oracle")
     args = parser.parse_args()
     if args.aot_eager and not (args.compile and args.capture_gradients):
         parser.error("--aot-eager requires --compile --capture-gradients")
@@ -73,7 +74,12 @@ def main():
         from tools.capture_inkling_execution_layers import install_capture
         destination = destination.with_name(destination.name + "-layers")
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-layers")
-        layer_capture = install_capture()
+        if args.capture_first_layer_inputs:
+            destination = destination.with_name(destination.name + "-first-inputs")
+            metrics_path = metrics_path.with_stem(metrics_path.stem + "-first-inputs")
+        layer_capture = install_capture(first_inputs=args.capture_first_layer_inputs)
+    elif args.capture_first_layer_inputs:
+        parser.error("--capture-first-layer-inputs requires --capture-layer-outputs")
     if (destination.exists() and not args.forward_only) or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
