@@ -30,6 +30,11 @@ class FP32Experts:
                 gate = F.linear(values, experts.gate_proj[expert])
                 up = F.linear(values, experts.up_proj[expert])
                 outputs.append(F.linear(experts.activation.apply(gate, up), experts.down_proj[expert]))
+        # Dispatcher reserves a padded tail beyond the per-expert groups. These
+        # rows map only to its discarded sentinel row, not to any real token.
+        if start < x.shape[0]:
+            assert torch.count_nonzero(x[start:]).item() == 0
+            outputs.append(x.new_zeros((x.shape[0] - start, experts.down_proj.shape[1])))
         return torch.cat(outputs, dim=0)
 
 
