@@ -54,7 +54,7 @@ def main():
         destination = destination.with_name(destination.name + "-dynamo-eager")
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-dynamo-eager")
     if args.forward_only:
-        metrics_path = metrics_path.with_stem(metrics_path.stem + "-forward-only")
+        metrics_path = metrics_path.with_stem(metrics_path.stem + "-no-grad-forward")
     if (destination.exists() and not args.forward_only) or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
@@ -85,6 +85,8 @@ def main():
                 samples.append((row, record, score - baseline))
     if not samples:
         raise ValueError("No nonzero advantages; refusing an empty update")
+    if args.forward_only:
+        torch.set_grad_enabled(False)
     for index, (row, record, advantage) in enumerate(samples):
         response = record["response"]
         score = reward(response["raw_output"], row["answer"], response["finish_reason"])
