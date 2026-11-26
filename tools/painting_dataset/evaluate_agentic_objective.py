@@ -30,7 +30,7 @@ def main():
     if destination.exists():
         raise ValueError("Preserve completed acceptance evidence")
     plan = json.loads((args.training / "plan.json").read_text())
-    adapter = args.training / "adapter-painting-step1"
+    adapter = args.training / plan.get("adapter_name", "adapter-painting-step1")
     setup_logger("info")
     setup_torch_distributed()
     torch.manual_seed(42)

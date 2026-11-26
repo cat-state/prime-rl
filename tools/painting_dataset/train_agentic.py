@@ -190,7 +190,7 @@ def execute(plan, output):
     if not all(torch.isfinite(v).all() for v in full.values()):
         raise ValueError("Nonfinite adapter")
     if dist.get_rank() == 0:
-        destination = output / "adapter-painting-step1"
+        destination = output / plan.get("adapter_name", "adapter-painting-step1")
         destination.mkdir()
         save_file(full, str(destination / "adapter_model.safetensors"))
         save_lora_config(model, destination, rank=8, alpha=16, dropout=0)
@@ -247,8 +247,12 @@ def main():
     )
     parser.add_argument("--execute", action="store_true", help="Execute one optimizer step; only after reward approval")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--adapter-name", default="adapter-painting-step1")
     args = parser.parse_args()
     plan = build_plan(args.pilot, args.rewards, args.learning_rate)
+    if Path(args.adapter_name).name != args.adapter_name or args.adapter_name in (".", ".."):
+        parser.error("--adapter-name must be a simple directory name")
+    plan["adapter_name"] = args.adapter_name
     if args.execute and not args.rewards:
         parser.error("--execute requires approved --rewards")
     args.output.mkdir(exist_ok=True)
