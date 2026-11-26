@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import time
 from pathlib import Path
 
 
@@ -84,6 +85,7 @@ def execute(plan, output):
     from prime_rl.utils.logger import setup_logger
     from tools.painting_dataset.agentic_batch import turn_to_microbatch
 
+    started = time.monotonic()
     setup_logger("info")
     setup_torch_distributed()
     torch.manual_seed(42)
@@ -116,7 +118,8 @@ def execute(plan, output):
         raise ValueError("No nonzero advantage, refusing empty update")
     # Longest context first exposes capacity before spending time on smaller samples.
     samples.sort(key=lambda pair: pair[1]["sequence_tokens"], reverse=True)
-    for trajectory, turn in samples:
+
+    def replay_loss(trajectory, turn):
         directory = Path(turn["directory"])
         encoded = json.loads((directory / "encoded.json").read_text())
         response = json.loads((directory / "response.json").read_text())
@@ -145,6 +148,12 @@ def execute(plan, output):
         )
         if not torch.isfinite(loss) or not torch.isfinite(ratio).all():
             raise ValueError("Nonfinite replay objective")
+        return loss, ratio, logratio
+
+    for trajectory, turn in samples:
+        loss, ratio, logratio = replay_loss(trajectory, turn)
+        directory = Path(turn["directory"])
+        advantage = trajectory["advantage"]
         loss.backward()
         rows.append(
             {
@@ -160,7 +169,7 @@ def execute(plan, output):
         if dist.get_rank() == 0:
             (output / "progress.json").write_text(json.dumps(rows, indent=2))
             print(rows[-1], flush=True)
-        del result, loss, ratio, logratio, tensors, ids, mask, old
+        del loss, ratio, logratio
     norm = sum(
         (p.grad.to_local() if hasattr(p.grad, "to_local") else p.grad).float().square().sum()
         for p in params
@@ -178,12 +187,46 @@ def execute(plan, output):
     if not all(torch.isfinite(v).all() for v in full.values()):
         raise ValueError("Nonfinite adapter")
     if dist.get_rank() == 0:
-        destination = output / "adapter-step1"
+        destination = output / "adapter-painting-step1"
         destination.mkdir()
         save_file(full, str(destination / "adapter_model.safetensors"))
         save_lora_config(model, destination, rank=8, alpha=16, dropout=0)
         (output / "complete.json").write_text(
             json.dumps({"optimizer_steps": 1, "gradient_norm": norm.sqrt().item(), "samples": len(samples)}, indent=2)
+        )
+    # Adapter is already exported before this read-only acceptance pass. Never repeat the optimizer if evaluation fails.
+    optimizer.zero_grad(set_to_none=True)
+    after_rows = []
+    with torch.no_grad():
+        for trajectory, turn in samples:
+            loss, ratio, logratio = replay_loss(trajectory, turn)
+            after_rows.append(
+                {
+                    "turn": turn["directory"],
+                    "loss": loss.item(),
+                    "ratio_min": ratio.min().item(),
+                    "ratio_max": ratio.max().item(),
+                    "sampled_k3": (ratio - 1 - logratio).mean().item(),
+                }
+            )
+            if dist.get_rank() == 0:
+                (output / "after-objective-progress.json").write_text(json.dumps(after_rows, indent=2))
+            del loss, ratio, logratio
+    if dist.get_rank() == 0:
+        before = -sum(row["loss"] for row in rows)
+        after = -sum(row["loss"] for row in after_rows)
+        (output / "objective-comparison.json").write_text(
+            json.dumps(
+                {
+                    "before": before,
+                    "after": after,
+                    "delta": after - before,
+                    "wall_seconds_including_startup": time.monotonic() - started,
+                    "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
+                    "gradient_norm": norm.sqrt().item(),
+                },
+                indent=2,
+            )
         )
     (output / f"compiler-rank{dist.get_rank()}.json").write_text(
         json.dumps({str(k): dict(v) for k, v in counters.items()}, indent=2)
