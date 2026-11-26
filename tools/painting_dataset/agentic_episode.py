@@ -104,7 +104,7 @@ class EpisodeConfig:
 
 def run_episode(*, root: Path, target: Path, contract: str, encoder: Callable,
                 generator: Callable, renderer_factory: Callable, reward_fn: Callable,
-                seed: int, policy: str, config: EpisodeConfig | None = None) -> Path:
+                seed: int, policy: str, config: EpisodeConfig | None = None, resume: Path | None = None) -> Path:
     """Encoder(messages,dir)->metadata; generator(metadata,request)->full response.
 
     renderer_factory(workspace) is a context manager owning its process/socket.
@@ -116,19 +116,45 @@ def run_episode(*, root: Path, target: Path, contract: str, encoder: Callable,
     if config.turns not in (2, 3) or config.temperature <= 0:
         raise ValueError("Use two or three turns and positive sampling temperature")
     root.mkdir(parents=True, exist_ok=True)
-    workspace = Path(tempfile.mkdtemp(prefix="ep-", dir=root)).resolve()
-    copied = workspace / "target.png"
-    with Image.open(target) as image:
-        image.convert("RGB").save(copied)
+    if resume is None:
+        workspace = Path(tempfile.mkdtemp(prefix="ep-", dir=root)).resolve()
+        copied = workspace / "target.png"
+        with Image.open(target) as image:
+            image.convert("RGB").save(copied)
+        messages = [{"role": "user", "content": [{"type": "image", "path": str(copied), "sha256": digest(copied)},
+                     {"type": "text", "text": "Reconstruct this painting with WGSL. Render feedback will follow.\n" + contract}]}]
+        state = {"seed": seed, "policy": policy, "target_sha256": digest(copied), "config": vars(config), "turns": []}
+    else:
+        workspace = confined(resume, root)
+        copied = workspace / "target.png"
+        state = json.loads((workspace / "episode.json").read_text())
+        old_config = dict(state["config"])
+        old_config["turns"] = config.turns
+        if (not state.get("complete") or state["seed"] != seed or state["policy"] != policy
+                or old_config != vars(config) or digest(copied) != state["target_sha256"]
+                or not 0 < len(state["turns"]) < config.turns):
+            raise ValueError("Resume requires a complete shorter episode with matching policy/config/target")
+        previous = workspace / f"turn-{len(state['turns']) - 1}"
+        response = json.loads((previous / "response.json").read_text())
+        messages = json.loads((previous / "messages.json").read_text())
+        record = state["turns"][-1]
+        if record["valid"]:
+            image_path = confined(record["image"], previous)
+            feedback = [{"type": "image", "path": str(image_path), "sha256": digest(image_path)},
+                        {"type": "text", "text": "This is your rendered result. Compare it with the target and improve the complete WGSL program."}]
+        else:
+            feedback = [{"type": "text", "text": "Render failed: " + record["error"] + "\nRevise the complete WGSL program."}]
+        messages.extend([{"role": "assistant", "content": response["raw_output"]}, {"role": "user", "content": feedback}])
+        write_json(workspace / f"episode-before-extension-{len(state['turns'])}.json", state)
+        state["complete"] = False
+        state["config"] = vars(config)
+    with Image.open(copied) as image:
         width, height = image.size
     scale = config.resolution / max(width, height)
     width, height = max(1, round(width * scale)), max(1, round(height * scale))
-    messages = [{"role": "user", "content": [{"type": "image", "path": str(copied), "sha256": digest(copied)},
-                 {"type": "text", "text": "Reconstruct this painting with WGSL. Render feedback will follow.\n" + contract}]}]
-    state = {"seed": seed, "policy": policy, "target_sha256": digest(copied), "config": vars(config), "turns": []}
     write_json(workspace / "episode.json", state)
     with renderer_factory(workspace) as renderer:
-        for turn in range(config.turns):
+        for turn in range(len(state["turns"]), config.turns):
             directory = workspace / f"turn-{turn}"
             directory.mkdir()
             write_json(directory / "messages.json", messages)

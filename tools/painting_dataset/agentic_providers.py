@@ -66,13 +66,13 @@ class FrozenEncoderClient:
 
 
 class SharedInferenceGenerator:
-    def __init__(self, *, max_model_len=6144, adapter: Path | None = None, policy="base"):
+    def __init__(self, *, max_model_len=6144, kv_cache_gib=24, adapter: Path | None = None, policy="base"):
         from vllm import LLM
         from vllm.lora.request import LoRARequest
         self.llm = LLM(model="/dev/shm/inkling2-loop-bf16", tensor_parallel_size=1,
                        enable_prompt_embeds=True, enforce_eager=False, max_num_seqs=1,
                        max_model_len=max_model_len, max_num_batched_tokens=4096,
-                       kv_cache_memory_bytes=24 * 1024**3, enable_prefix_caching=True,
+                       kv_cache_memory_bytes=kv_cache_gib * 1024**3, enable_prefix_caching=True,
                        enable_flashinfer_autotune=False, tokenizer_mode="hf", enable_lora=True,
                        max_lora_rank=8, lora_target_modules=["wo_ud"],
                        aux_output_config={"enable_return_routed_experts": True})

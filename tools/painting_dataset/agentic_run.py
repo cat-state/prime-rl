@@ -25,20 +25,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--resume", type=Path, help="Extend a completed shorter episode with matching settings")
     parser.add_argument("--encoder-gpu", default="3")
     parser.add_argument("--max-tokens", type=int, default=1536)
+    parser.add_argument("--max-model-len", type=int, default=6144)
+    parser.add_argument("--kv-cache-gib", type=int, default=24)
     parser.add_argument("--turns", type=int, default=2)
     parser.add_argument("--final-only", action="store_true", help="Explicitly prefill the model final-channel header")
     parser.add_argument("--instruction", default="", help="Additional task-specific instruction, retained in messages")
     args = parser.parse_args()
-    args.output.mkdir(parents=True, exist_ok=False)
+    args.output.mkdir(parents=True, exist_ok=args.resume is not None)
     with FrozenEncoderClient(args.output, args.encoder_gpu, final_only=args.final_only) as encoder:
-        generator = SharedInferenceGenerator(max_model_len=6144)
+        generator = SharedInferenceGenerator(max_model_len=args.max_model_len, kv_cache_gib=args.kv_cache_gib)
         from tools.painting_dataset.rgb_renderer import factory
         episode = run_episode(root=args.output, target=args.target, contract=CONTRACT + "\n" + args.instruction,
                               encoder=encoder, generator=generator, renderer_factory=factory,
                               reward_fn=score, seed=401, policy="base",
-                              config=EpisodeConfig(turns=args.turns, max_tokens=args.max_tokens))
+                              config=EpisodeConfig(turns=args.turns, max_tokens=args.max_tokens), resume=args.resume)
         # Exercise the actual multi-image Prime bridge and frozen cache, without
         # an optimizer step or loading a second trainer model.
         from prime_rl.trainer.models.inkling2_loop.frozen_images import FrozenImageCache
