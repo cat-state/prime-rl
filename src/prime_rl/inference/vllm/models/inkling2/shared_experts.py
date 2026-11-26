@@ -16,11 +16,23 @@ _groups = ContextVar("inkling_shared_expert_groups", default=None)
 WEIGHTS = ("w13_weight", "w2_weight")
 
 
+def _kernel_parameter(layer, name):
+    # vLLM checkpoint reload stages one layer at a time on meta/new storage,
+    # then copies into these saved Parameters to preserve CUDA graph addresses.
+    # Check the actual runtime storage, not the temporary checkpoint staging.
+    from vllm.model_executor.model_loader.reload.layerwise import LAYERWISE_INFO
+
+    info = LAYERWISE_INFO.get(layer)
+    if info is not None and info.kernel_tensors is not None:
+        return info.kernel_tensors[0][name]
+    return getattr(layer, name)
+
+
 def validate_group(group):
     source = group[0]
     for layer in group:
         for name in WEIGHTS:
-            a, b = getattr(source, name), getattr(layer, name)
+            a, b = _kernel_parameter(source, name), _kernel_parameter(layer, name)
             if (a.shape, a.stride(), a.dtype, a.device) != (b.shape, b.stride(), b.dtype, b.device):
                 raise RuntimeError(f"Shared expert layout changed: {name}")
             if a.data_ptr() != b.data_ptr():
