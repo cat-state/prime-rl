@@ -7,7 +7,9 @@ import time
 from pathlib import Path
 
 
-def build_plan(root, rewards=None):
+def build_plan(root, rewards=None, learning_rate=1e-5):
+    if not 0 < learning_rate < float("inf"):
+        raise ValueError("Learning rate must be finite and positive")
     timing = json.loads((root / "timing.json").read_text())
     jobs = json.loads((root / "jobs.json").read_text())
     reward_rows = json.loads(rewards.read_text()) if rewards else None
@@ -63,6 +65,7 @@ def build_plan(root, rewards=None):
         "trajectories": trajectories,
         "sequence_lengths": sorted(t["sequence_tokens"] for e in trajectories for t in e["turns"]),
         "optimizer_steps": 1,
+        "optimizer": {"name": "AdamW", "learning_rate": learning_rate, "weight_decay": 0},
         "lora": {"rank": 8, "alpha": 16, "target": "o_proj"},
         "activation_checkpointing": "full, every block",
         "dtype": "existing production BF16 forward/FP32 masters unchanged",
@@ -106,7 +109,7 @@ def execute(plan, output):
     params = [p for p in model.parameters() if p.requires_grad]
     if any(p.dtype != torch.float32 for p in params):
         raise ValueError("Expected existing FP32 LoRA master parameters")
-    optimizer = torch.optim.AdamW(params, lr=1e-5, weight_decay=0)
+    optimizer = torch.optim.AdamW(params, lr=plan.get("optimizer", {}).get("learning_rate", 1e-5), weight_decay=0)
     rows = []
     samples = [
         (trajectory, turn)
@@ -243,8 +246,9 @@ def main():
         "--rewards", type=Path, help="Explicit approved terminal reward map keyed by absolute episode path"
     )
     parser.add_argument("--execute", action="store_true", help="Execute one optimizer step; only after reward approval")
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
     args = parser.parse_args()
-    plan = build_plan(args.pilot, args.rewards)
+    plan = build_plan(args.pilot, args.rewards, args.learning_rate)
     if args.execute and not args.rewards:
         parser.error("--execute requires approved --rewards")
     args.output.mkdir(exist_ok=True)
