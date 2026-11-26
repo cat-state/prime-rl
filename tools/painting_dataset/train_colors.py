@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--forward-only", action="store_true", help="Diagnostic fixed-token forward comparison without backward")
     parser.add_argument("--attention-boundary", action="store_true", help="Diagnostic graph break around independently compiled attention")
     parser.add_argument("--compiler-audit", action="store_true", help="Save Dynamo counters in a separate diagnostic run")
+    parser.add_argument("--capture-layer-outputs", action="store_true", help="Diagnostic sampled activation capture outside compiled layer calls")
     args = parser.parse_args()
     if args.aot_eager and not (args.compile and args.capture_gradients):
         parser.error("--aot-eager requires --compile --capture-gradients")
@@ -65,6 +66,14 @@ def main():
     if args.compiler_audit:
         destination = destination.with_name(destination.name + "-audit")
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-audit")
+    layer_capture = None
+    if args.capture_layer_outputs:
+        if not (args.forward_only and args.capture_gradients and args.compiler_audit):
+            parser.error("--capture-layer-outputs requires --forward-only --capture-gradients --compiler-audit")
+        from tools.capture_inkling_execution_layers import install_capture
+        destination = destination.with_name(destination.name + "-layers")
+        metrics_path = metrics_path.with_stem(metrics_path.stem + "-layers")
+        layer_capture = install_capture()
     if (destination.exists() and not args.forward_only) or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
@@ -103,6 +112,8 @@ def main():
                 samples.append((row, record, score - baseline))
     if not samples:
         raise ValueError("No nonzero advantages; refusing an empty update")
+    if args.capture_layer_outputs:
+        samples = samples[:1]
     if args.forward_only:
         torch.set_grad_enabled(False)
     for index, (row, record, advantage) in enumerate(samples):
@@ -158,6 +169,8 @@ def main():
 
         audit = {str(group): {str(key): value for key, value in counts.items()} for group, counts in counters.items()}
         (root / f"{destination.name}-rank{dist.get_rank()}-compiler.json").write_text(json.dumps(audit, indent=2))
+    if layer_capture is not None and dist.get_rank() == 0:
+        save_file(layer_capture, str(root / f"{destination.name}-activations.safetensors"))
     if args.forward_only:
         dist.destroy_process_group()
         return
