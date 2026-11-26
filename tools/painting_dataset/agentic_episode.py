@@ -100,6 +100,25 @@ class EpisodeConfig:
     temperature: float = .7
     resolution: int = 256
     entrypoint: str = "paint"
+    history_policy: str = "full-v1"
+
+
+def next_messages(messages: list, response: dict, feedback: list, config: EpisodeConfig) -> list:
+    """Versioned prompt projection; raw response/replay evidence remains untouched."""
+    if config.history_policy == "full-v1":
+        return messages + [{"role": "assistant", "content": response["raw_output"]},
+                           {"role": "user", "content": feedback}]
+    if config.history_policy != "bounded-v2":
+        raise ValueError("Unknown history policy")
+    result = [messages[0]]
+    try:
+        source = extract_action(response, config.entrypoint)
+    except ValueError:
+        pass  # Unfinished reasoning/non-executed partial action is never next-prompt context.
+    else:
+        result.append({"role": "assistant", "content": "```wgsl\n" + source + "\n```"})
+    result.append({"role": "user", "content": feedback})
+    return result
 
 
 def run_episode(*, root: Path, target: Path, contract: str, encoder: Callable,
@@ -113,6 +132,8 @@ def run_episode(*, root: Path, target: Path, contract: str, encoder: Callable,
     named metrics, retaining the reward definition/version alongside results.
     """
     config = config or EpisodeConfig()
+    if config.history_policy not in ("full-v1", "bounded-v2"):
+        raise ValueError("Unknown history policy")
     if config.turns not in (2, 3) or config.temperature <= 0:
         raise ValueError("Use two or three turns and positive sampling temperature")
     root.mkdir(parents=True, exist_ok=True)
@@ -129,6 +150,7 @@ def run_episode(*, root: Path, target: Path, contract: str, encoder: Callable,
         copied = workspace / "target.png"
         state = json.loads((workspace / "episode.json").read_text())
         old_config = dict(state["config"])
+        old_config.setdefault("history_policy", "full-v1")
         old_config["turns"] = config.turns
         if (not state.get("complete") or state["seed"] != seed or state["policy"] != policy
                 or old_config != vars(config) or digest(copied) != state["target_sha256"]
@@ -144,7 +166,7 @@ def run_episode(*, root: Path, target: Path, contract: str, encoder: Callable,
                         {"type": "text", "text": "This is your rendered result. Compare it with the target and improve the complete WGSL program."}]
         else:
             feedback = [{"type": "text", "text": "Render failed: " + record["error"] + "\nRevise the complete WGSL program."}]
-        messages.extend([{"role": "assistant", "content": response["raw_output"]}, {"role": "user", "content": feedback}])
+        messages = next_messages(messages, response, feedback, config)
         write_json(workspace / f"episode-before-extension-{len(state['turns'])}.json", state)
         state["complete"] = False
         state["config"] = vars(config)
@@ -196,8 +218,7 @@ def run_episode(*, root: Path, target: Path, contract: str, encoder: Callable,
                 feedback = [{"type": "text", "text": "Render failed: " + record["error"] + "\nRevise the complete WGSL program."}]
             state["turns"].append(record)
             write_json(workspace / "episode.json", state)
-            messages.append({"role": "assistant", "content": response["raw_output"]})
-            messages.append({"role": "user", "content": feedback})
+            messages = next_messages(messages, response, feedback, config)
     state["complete"] = True
     write_json(workspace / "episode.json", state)
     return workspace

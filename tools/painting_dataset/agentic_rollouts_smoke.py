@@ -15,6 +15,8 @@ from tools.painting_dataset.agentic_rollouts import collect_rollouts
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--history-policy", choices=["full-v1", "bounded-v2"], default="full-v1")
+    parser.add_argument("--turns", type=int, default=2)
     args = parser.parse_args()
     args.output.mkdir(exist_ok=False)
     target = args.output / "target.png"
@@ -53,12 +55,21 @@ def main():
 
     jobs = [{"target": str(target), "seed": 100+i*10} for i in range(4)]
     result = collect_rollouts(jobs=jobs, output=args.output, encoder=encode, generator=Generator(), batch_size=2,
-        config=EpisodeConfig(turns=2), renderer_factory=factory, reward_fn=lambda *_: {"diagnostic": 1})
+        config=EpisodeConfig(turns=args.turns, history_policy=args.history_policy), renderer_factory=factory, reward_fn=lambda *_: {"diagnostic": 1})
     assert len(set(result["episodes"])) == 4
-    assert [b["size"] for b in result["generation_batches"]] == [2]*4
+    assert [b["size"] for b in result["generation_batches"]] == [2]*(2*args.turns)
     for ep in result["episodes"]:
         metadata = json.loads((Path(ep)/"turn-1/encoded.json").read_text())
         assert len(metadata["image_spans"]) == 2
+        if args.history_policy == "bounded-v2" and args.turns == 3:
+            last = Path(ep)/"turn-2"
+            metadata = json.loads((last/"encoded.json").read_text())
+            assert len(metadata["image_spans"]) == 2
+            training = json.loads((last/"training.json").read_text())
+            n = len(metadata["input_ids"])
+            assert training["loss_mask"] == [False]*n + [True]*2
+            assert training["routed_experts"]["shape"] == [n+1, 48, 8]
+            assert len(json.loads((last/"messages.json").read_text())) == 3
     bad = args.output / "failure"
     bad.mkdir()
     def broken_encoder(messages, directory):
@@ -70,7 +81,7 @@ def main():
         assert str(error) == "injected encoder failure"
     else:
         raise AssertionError("Failure must propagate without deadlocking workers")
-    print(json.dumps({"passed": True, "episodes": 4, "turns": 2, "failure_cleanup": True}))
+    print(json.dumps({"passed": True, "episodes": 4, "turns": args.turns, "history_policy": args.history_policy, "failure_cleanup": True}))
 
 
 if __name__ == "__main__":

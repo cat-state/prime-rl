@@ -98,6 +98,7 @@ def main():
     parser.add_argument("--encoder-gpu", default="1")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--turns", type=int, default=3)
+    parser.add_argument("--history-policy", choices=["full-v1", "bounded-v2"], default="full-v1")
     args = parser.parse_args()
     jobs = json.loads(args.jobs.read_text())
     if not jobs or len({j["seed"] for j in jobs}) != len(jobs) or args.batch_size < 1:
@@ -109,7 +110,7 @@ def main():
                                              max_num_seqs=args.batch_size, adapter=args.adapter,
                                              policy="compiled" if args.adapter else "base")
         result = collect_rollouts(jobs=jobs, output=args.output, encoder=encoder, generator=generator,
-                                  batch_size=args.batch_size, config=EpisodeConfig(turns=args.turns, max_tokens=8192))
+                                  batch_size=args.batch_size, config=EpisodeConfig(turns=args.turns, max_tokens=8192, history_policy=args.history_policy))
         print(json.dumps(result), flush=True)
 
 
