@@ -59,6 +59,7 @@ def main():
     evidence = json.loads((episode / "turn-2/training.json").read_text())
     assert sum(evidence["loss_mask"]) == 2 and len(evidence["image_spans"]) == 2
     import torch
+
     from prime_rl.trainer.models.inkling2_loop.frozen_images import FrozenImageCache
     from prime_rl.trainer.rl.data import DataLoader, prepare_micro_batch
     from tools.painting_dataset.agentic_batch import turn_to_microbatch

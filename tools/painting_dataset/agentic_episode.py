@@ -38,7 +38,8 @@ def extract_action(response: dict, entrypoint: str) -> str:
         raise ValueError("Generation truncated before complete action")
     text = response["raw_output"]
     if "<|content_text|>" in text:
-        text = text.split("<|content_text|>", 1)[1].split("<|end_message|>", 1)[0]
+        text = text.split("<|content_text|>", 1)[1]
+    text = text.split("<|end_message|>", 1)[0]
     match = re.fullmatch(r"\s*```(?:wgsl)?\s*\n(.*?)\n```\s*", text, re.S)
     if not match:
         raise ValueError("Expected exactly one final WGSL code block")

@@ -15,9 +15,10 @@ from tools.painting_dataset.serve import adapter_digest
 
 
 class FrozenEncoderClient:
-    def __init__(self, workspace: Path, gpu: str = "3"):
+    def __init__(self, workspace: Path, gpu: str = "3", final_only: bool = False):
         self.workspace = workspace.resolve()
         self.gpu = gpu
+        self.final_only = final_only
         self.socket = self.workspace / "encoder.sock"
         if len(os.fsencode(self.socket)) >= 108:
             raise ValueError("Encoder socket path too long")
@@ -44,7 +45,8 @@ class FrozenEncoderClient:
         with socket.socket(socket.AF_UNIX) as client:
             client.settimeout(300)
             client.connect(str(self.socket))
-            client.sendall((json.dumps({"messages": messages, "directory": str(directory)}) + "\n").encode())
+            client.sendall((json.dumps({"messages": messages, "directory": str(directory),
+                                       "final_only": self.final_only}) + "\n").encode())
             result = json.loads(client.makefile("rb").readline(8_000_000))
         if not result["ok"]:
             raise RuntimeError(result["error"])
@@ -64,7 +66,7 @@ class FrozenEncoderClient:
 
 
 class SharedInferenceGenerator:
-    def __init__(self, *, max_model_len=8192, adapter: Path | None = None, policy="base"):
+    def __init__(self, *, max_model_len=6144, adapter: Path | None = None, policy="base"):
         from vllm import LLM
         from vllm.lora.request import LoRARequest
         self.llm = LLM(model="/dev/shm/inkling2-loop-bf16", tensor_parallel_size=1,

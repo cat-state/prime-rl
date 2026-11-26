@@ -13,13 +13,14 @@ REVISION = "c9d028302cd0f035fdf8e7e91f089a4ce94d2195"
 SOURCE = "thinkingmachines/Inkling-2-Mini"
 
 
-def encode(model, processor, messages, directory):
+def encode(model, processor, messages, directory, final_only=False):
     transformed, images = [], []
     for message in messages:
         if message["role"] == "assistant":
             text = message["content"]
             if "<|content_text|>" in text:
-                text = text.split("<|content_text|>", 1)[1].split("<|end_message|>", 1)[0]
+                text = text.split("<|content_text|>", 1)[1]
+            text = text.split("<|end_message|>", 1)[0]
             transformed.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
             continue
         content = []
@@ -39,6 +40,9 @@ def encode(model, processor, messages, directory):
         transformed.append({"role": message["role"], "content": content})
     inputs = processor.apply_chat_template(transformed, tokenize=True, add_generation_prompt=True,
                                            return_dict=True, return_tensors="pt", reasoning_effort="none").to(model.device)
+    if final_only:
+        header = processor.tokenizer.encode("<|message_model|><|content_text|>", add_special_tokens=False)
+        inputs["input_ids"] = torch.cat((inputs["input_ids"], torch.tensor([header], device=model.device)), dim=1)
     with torch.inference_mode():
         text = model.model.get_input_embeddings()(inputs["input_ids"])
         encoded = model.get_image_features(inputs["pixel_values"], inputs["image_grid_thw"], return_dict=True)
@@ -71,7 +75,7 @@ def encode(model, processor, messages, directory):
     manifest.write_text(json.dumps({"encoder_frozen": True, "model": SOURCE, "revision": REVISION, "records": records}))
     return {"features": str(path), "feature_manifest": str(manifest), "input_ids": inputs["input_ids"][0].cpu().tolist(),
             "mm_token_type_ids": mask[0].long().cpu().tolist(), "image_spans": metadata,
-            "encoder_revision": REVISION}
+            "encoder_revision": REVISION, "response_mode": "final-only-prefill" if final_only else "default"}
 
 
 def main():
@@ -99,7 +103,8 @@ def main():
                             for part in message["content"]:
                                 if part["type"] == "image" and not Path(part["path"]).resolve(strict=True).is_relative_to(root):
                                     raise ValueError("Encoder image outside workspace")
-                    result = {"ok": True, "encoded": encode(model, processor, request["messages"], directory)}
+                    result = {"ok": True, "encoded": encode(model, processor, request["messages"], directory,
+                                                             request.get("final_only", False))}
                 except Exception as error:
                     result = {"ok": False, "error": repr(error)}
                 connection.sendall((json.dumps(result) + "\n").encode())
