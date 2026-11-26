@@ -58,6 +58,27 @@ def main():
     assert len(calls[2]["image_spans"]) == 2
     evidence = json.loads((episode / "turn-2/training.json").read_text())
     assert sum(evidence["loss_mask"]) == 2 and len(evidence["image_spans"]) == 2
+    import torch
+    from prime_rl.trainer.models.inkling2_loop.frozen_images import FrozenImageCache
+    from prime_rl.trainer.rl.data import DataLoader, prepare_micro_batch
+    from tools.painting_dataset.agentic_batch import turn_to_microbatch
+
+    directory = episode / "turn-2"
+    encoded = json.loads((directory / "encoded.json").read_text())
+    response = json.loads((directory / "response.json").read_text())
+    records = []
+    for i, span in enumerate(encoded["image_spans"]):
+        path = directory / f"image-{i}.pt"
+        torch.save({"image_features": torch.full((span["count"], 4), float(i + 1))}, path)
+        records.append({"source_image_sha256": span["image_sha256"], "features": str(path)})
+    manifest = directory / "manifest.json"
+    manifest.write_text(json.dumps({"encoder_frozen": True, "records": records}))
+    cache = FrozenImageCache(manifest, 4)
+    batch = turn_to_microbatch(response, encoded, advantage=.5, expected_policy="test")
+    tensors = prepare_micro_batch(DataLoader._micro_batch_to_tensor(None, batch), None, cache.materialize)
+    assert tensors["mm_kwargs"]["image_features"].shape == (2, 4)
+    assert tensors["mm_kwargs"]["image_token_mask"].sum() == 2
+    assert tensors["loss_mask"].sum() == 2
     try:
         confined(target, episode)
     except ValueError:
