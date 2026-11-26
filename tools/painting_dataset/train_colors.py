@@ -30,6 +30,7 @@ def main():
     parser.add_argument("--capture-gradients", action="store_true", help="Preserve pre-optimizer gradient shards for numerical diagnosis")
     parser.add_argument("--aot-eager", action="store_true", help="Diagnostic graph capture without Inductor code generation")
     parser.add_argument("--dynamo-eager", action="store_true", help="Diagnostic Dynamo capture without AOTAutograd")
+    parser.add_argument("--forward-only", action="store_true", help="Diagnostic fixed-token forward comparison without backward")
     args = parser.parse_args()
     if args.aot_eager and not (args.compile and args.capture_gradients):
         parser.error("--aot-eager requires --compile --capture-gradients")
@@ -52,7 +53,9 @@ def main():
     if args.dynamo_eager:
         destination = destination.with_name(destination.name + "-dynamo-eager")
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-dynamo-eager")
-    if destination.exists() or metrics_path.exists():
+    if args.forward_only:
+        metrics_path = metrics_path.with_stem(metrics_path.stem + "-forward-only")
+    if (destination.exists() and not args.forward_only) or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
                          compile=CompileConfig(fullgraph=False) if args.compile else None, ep=1, cp=1, offload="none",
@@ -102,6 +105,13 @@ def main():
         loss = -torch.minimum(ratio * advantage, ratio.clamp(.8, 1.2) * advantage).mean()
         if args.group_centered:
             loss = loss / len(samples)
+        if args.forward_only:
+            metrics.append({"id": row["id"], "loss": loss.item(),
+                            "sampled_logprobs": output["logprobs"][mask].detach().float().cpu().tolist()})
+            if dist.get_rank() == 0:
+                metrics_path.write_text(json.dumps(metrics, indent=2))
+            del output, loss, ratio
+            continue
         loss.backward()
         def local(t):
             return t.to_local() if hasattr(t, "to_local") else t
@@ -123,6 +133,9 @@ def main():
         if dist.get_rank() == 0:
             metrics_path.write_text(json.dumps(metrics, indent=2))
             print({k: v for k, v in metrics[-1].items() if k != "sampled_logprobs"}, flush=True)
+    if args.forward_only:
+        dist.destroy_process_group()
+        return
     state = get_lora_state().adapter_state_dict()
     full = {k: (v.full_tensor() if hasattr(v, "full_tensor") else v).detach().cpu().contiguous().clone()
             for k, v in state.items()}
