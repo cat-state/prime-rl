@@ -16,20 +16,30 @@ def main():
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--socket", default="/tmp/painting-render.sock")
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     names = re.findall(r'"([^"]+)"', args.source.read_text().split("const NAMES:", 1)[1].split("];", 1)[0])
-    args.output.mkdir(parents=True, exist_ok=False)
+    args.output.mkdir(parents=True, exist_ok=args.resume)
     records, failures = [], []
+    if args.resume:
+        previous = json.loads((args.output / "manifest.json").read_text())
+        records = previous["records"]
+        for row in records:
+            if hashlib.sha256(Path(row["image"]).read_bytes()).hexdigest() != row["image_sha256"]:
+                raise ValueError(f"Prior image changed: {row['id']}")
+    completed = {r["scene"] for r in records}
     prompt = ("Describe this rendered image in 3–5 concise sentences. Identify the visible geometry, "
               "spatial layout, colors, materials, lighting, and viewpoint. Distinguish observations from guesses. "
               "Do not invent unseen objects or infer a title. Give your description directly.")
     for scene, name in enumerate(names, 1):
+        if scene in completed:
+            continue
         key = f"environment-{scene:03d}"
         request = dict(scene=scene, seed=42, width=480, height=360, samples=2,
                        name=key, out=str(args.output.resolve()))
         try:
             with socket.socket(socket.AF_UNIX) as client:
-                client.settimeout(150)
+                client.settimeout(700)
                 client.connect(args.socket)
                 client.sendall((json.dumps(request) + "\n").encode())
                 response = json.loads(client.makefile("rb").readline())
@@ -46,6 +56,7 @@ def main():
         (args.output / "manifest.json").write_text(json.dumps(dict(records=records, failures=failures,
                                                                   catalog_size=len(names)), indent=2))
         print(dict(scene=scene, name=name, rendered=len(records), failures=len(failures)), flush=True)
+    (args.output / "render-complete.json").write_text(json.dumps(dict(rendered=len(records), failures=len(failures))))
 
 
 if __name__ == "__main__":
