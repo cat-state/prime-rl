@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--aot-eager", action="store_true", help="Diagnostic graph capture without Inductor code generation")
     parser.add_argument("--dynamo-eager", action="store_true", help="Diagnostic Dynamo capture without AOTAutograd")
     parser.add_argument("--forward-only", action="store_true", help="Diagnostic fixed-token forward comparison without backward")
+    parser.add_argument("--attention-boundary", action="store_true", help="Diagnostic graph break around independently compiled attention")
     args = parser.parse_args()
     if args.aot_eager and not (args.compile and args.capture_gradients):
         parser.error("--aot-eager requires --compile --capture-gradients")
@@ -55,11 +56,24 @@ def main():
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-dynamo-eager")
     if args.forward_only:
         metrics_path = metrics_path.with_stem(metrics_path.stem + "-no-grad-forward")
+    if args.attention_boundary:
+        if not (args.compile and args.capture_gradients):
+            parser.error("--attention-boundary requires --compile --capture-gradients")
+        destination = destination.with_name(destination.name + "-attention-boundary")
+        metrics_path = metrics_path.with_stem(metrics_path.stem + "-attention-boundary")
     if (destination.exists() and not args.forward_only) or metrics_path.exists():
         raise ValueError("Refusing to overwrite prior adapter")
     config = ModelConfig(name="/dev/shm/inkling2-loop-bf16", conversion_dir=Path("/dev/shm/inkling2-training"),
                          compile=CompileConfig(fullgraph=False) if args.compile else None, ep=1, cp=1, offload="none",
                          lora=LoRAConfig(rank=8, alpha=16, target_modules=["o_proj"]))
+    if args.attention_boundary:
+        from prime_rl.trainer.models.inkling2 import modeling_inkling2
+
+        original_attention = modeling_inkling2.flex_attention
+        @torch.compiler.disable(recursive=False)
+        def attention_boundary(*positional, **kwargs):
+            return original_attention(*positional, **kwargs)
+        modeling_inkling2.flex_attention = attention_boundary
     original_compile = torch.nn.Module.compile
     def diagnostic_compile(module, *positional, **kwargs):
         kwargs.pop("mode", None)
