@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 from tools.painting_dataset.perceptual_reward import SpatialPerceptual, MODEL, REVISION, LAYERS
-from tools.painting_dataset.review_reward import load
+from tools.painting_dataset.review_reward import load, variants
 from tools.painting_dataset.painting_reward import score
 
 
@@ -16,19 +16,25 @@ def summary(rows):
 
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('episodes',type=Path); p.add_argument('jobs',type=Path); p.add_argument('controls',type=Path); p.add_argument('output',type=Path); args=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('episodes',type=Path); p.add_argument('jobs',type=Path); p.add_argument('controls',type=Path); p.add_argument('output',type=Path); p.add_argument('--in-memory-controls',action='store_true'); args=p.parse_args()
     jobs={j['seed']:j for j in json.loads(args.jobs.read_text())}; episodes=[]
     for path in sorted(args.episodes.glob('ep-*/episode.json')):
         meta=json.loads(path.read_text()); assert meta['complete'] and len(meta['turns'])==3
         episodes.append((path.parent,meta))
     assert len(episodes)==len(jobs) and {m['seed'] for _,m in episodes}==set(jobs)
     args.output.mkdir(parents=True,exist_ok=False); metric=SpatialPerceptual(); rows=[]
-    audit=json.loads(args.controls.read_text()); controls={}
+    audit=json.loads(args.controls.read_text()) if not args.in_memory_controls else None; controls={}
     for aid in sorted({j['artwork_id'] for j in jobs.values()}):
         target=next(j['target'] for j in jobs.values() if j['artwork_id']==aid)
-        subset=[r for r in audit['controls'] if r['artwork_id']==aid]
-        result=metric.compare([load(target)]+[load(r['image']) for r in subset])
-        controls[aid]={r['control']:m for r,m in zip(subset,result[1:],strict=True)}
+        if args.in_memory_controls:
+            reference=load(target); seed=int(hashlib.sha256(aid.encode()).hexdigest()[:8],16)
+            generated=variants(reference,reference,seed); names=['mean_color','fitted_gradient','shuffled_pixels']
+            result=metric.compare([reference]+[generated[name] for name in names])
+            controls[aid]=dict(zip(names,result[1:],strict=True))
+        else:
+            subset=[r for r in audit['controls'] if r['artwork_id']==aid]
+            result=metric.compare([load(target)]+[load(r['image']) for r in subset])
+            controls[aid]={r['control']:m for r,m in zip(subset,result[1:],strict=True)}
     for directory,meta in episodes:
         t=meta['turns'][-1]; j=jobs[meta['seed']]; valid=t['valid']; cap=meta['config']['max_tokens']
         row={'seed':meta['seed'],'artwork_id':j['artwork_id'],'episode':str(directory.resolve()),'target':j['target'],'valid':valid,'reward':0.,'token_budget_hits_all_turns':sum(x['tokens']>=cap for x in meta['turns']),'token_budget_hits_final':t['tokens']>=cap,'adapter_sha256':meta.get('adapter_sha256'),'error':t.get('error')}
